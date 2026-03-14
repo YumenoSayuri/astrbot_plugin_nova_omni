@@ -87,11 +87,17 @@
     "hint": "留空则使用当前正在使用的LLM提供商。LLM辅助分段任务较简单，建议选择稳定的模型",
     "_special": "select_provider"
   },
+  "llm_split_system_prompt": {
+    "type": "string",
+    "default": "",
+    "description": "LLM分段系统提示词(System Prompt)",
+    "hint": "放在system角色中发送，用于定义分段规则和格式要求。留空则不使用system prompt，所有内容放在user message中"
+  },
   "llm_split_prompt": {
     "type": "string",
-    "default": "请将以下文本分成{n}个段落，要求每段语义完整，长度尽量均匀。仅输出JSON数组格式，如: [\"段1\", \"段2\", \"段3\"]\n\n原文：\n{text}",
-    "description": "LLM分段提示词模板",
-    "hint": "可用变量: {n}=目标段数, {text}=原文"
+    "default": "原文：\n{text}",
+    "description": "LLM分段用户提示词模板(User Prompt)",
+    "hint": "可用变量: {n}=目标段数, {text}=原文。如果设置了system prompt，这里只需放原文即可"
   },
   "delay_strategy": {
     "type": "string",
@@ -134,6 +140,12 @@
     "type": "float",
     "default": 1.0,
     "description": "固定延迟时间(秒)"
+  },
+  "llm_timeout": {
+    "type": "float",
+    "default": 30.0,
+    "description": "LLM分段请求超时(秒)",
+    "hint": "超过此时间LLM未返回则自动回退到字数分段。建议设置为20-60秒"
   },
   "enable_reply": {
     "type": "bool",
