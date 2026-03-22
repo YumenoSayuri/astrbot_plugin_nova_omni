@@ -1,11 +1,14 @@
 """
-Nova Splitter - 智能消息分段插件 v1.1.1
+Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.2.0
 作者: Nova for 辉宝主人
 功能: 
   1. 按字数均分分段（强制标点边界，绝不在词语中间断开）
   2. 按标点分段
   3. LLM辅助智能分段（带超时保护和完善的异常处理）
   4. 智能标点清理(边界清理/句内保留)
+  5. 引导思考（让AI先思考再回复，思维链拦截与缓存）
+  6. 沉默机制（AI决定不回复时完全拦截）
+  7. 睡眠模式（管理员指令控制AI休眠/唤醒）
 """
 
 import re
@@ -21,7 +24,7 @@ from dataclasses import dataclass
 from astrbot.api.event import filter, AstrMessageEvent, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api import AstrBotConfig, logger
-from astrbot.api.provider import LLMResponse, Provider
+from astrbot.api.provider import LLMResponse, ProviderRequest, Provider
 from astrbot.api.message_components import Plain, BaseMessageComponent, Reply, At
 
 
@@ -65,12 +68,7 @@ class SplitStrategy(ABC):
         return len(stack) > 0
     
     def find_best_split_point(self, text: str, ideal_pos: int, search_range: int = 30) -> int:
-        """在理想位置附近找到最佳分割点
-        
-        核心原则: 绝不在词语中间断开，必须在标点/空格处切分
-        搜索范围扩大到 +-30 字符，优先找句末标点
-        """
-        # 搜索范围
+        """在理想位置附近找到最佳分割点"""
         start = max(0, ideal_pos - search_range)
         end = min(len(text), ideal_pos + search_range)
         
@@ -82,27 +80,24 @@ class SplitStrategy(ABC):
                 continue
             
             char = text[pos]
-            score = -999  # 默认不可用
+            score = -999
             
-            # 只在标点或空格处才是合法切分点
             if char in '\u3002\uff01\uff1f!?\n':
-                score = 100  # 句末标点最优
+                score = 100
             elif char in '\uff1b;':
                 score = 80
             elif char in '\uff0c,\u3001':
-                score = 60   # 逗号次之
+                score = 60
             elif char in ' ':
                 score = 40
             elif char in '\u2026\u2014\u2013~\uff5e':
-                score = 35   # 省略号/破折号
+                score = 35
             else:
-                continue  # 非标点/空格位置直接跳过，绝不在此切分
+                continue
             
-            # 位置越接近理想位置，加分越多
             distance_penalty = abs(pos - ideal_pos) * 2
             score -= distance_penalty
             
-            # 如果在配对符号内，大幅减分
             if self.is_inside_pair(text, pos):
                 score -= 200
             
@@ -110,7 +105,6 @@ class SplitStrategy(ABC):
                 best_score = score
                 best_pos = pos
         
-        # 如果在扩大范围内都没找到标点，进一步扩大搜索
         if best_pos == -1:
             extended_range = min(len(text) // 2, search_range * 3)
             ext_start = max(0, ideal_pos - extended_range)
@@ -128,7 +122,6 @@ class SplitStrategy(ABC):
                         best_score = score
                         best_pos = pos
         
-        # 最终兜底: 如果整篇文本都没有标点，才在理想位置切分
         if best_pos == -1:
             best_pos = ideal_pos
         
@@ -156,24 +149,19 @@ class CharCountSplitter(SplitStrategy):
         if target_segments == 1:
             return SplitResult(segments=[text], split_points=[])
         
-        # 计算理想分割点，在标点处切分
         split_points = []
         for i in range(1, target_segments):
             ideal_pos = i * ideal_length
             best_pos = self.find_best_split_point(text, ideal_pos)
             split_points.append(best_pos)
         
-        # 去重并排序
         split_points = sorted(set(split_points))
-        
-        # 移除太靠近开头或结尾的分割点
         split_points = [p for p in split_points 
                        if p >= min_segment_length and p < total_length - min_segment_length]
         
         if not split_points:
             return SplitResult(segments=[text], split_points=[])
         
-        # 根据分割点切分文本
         segments = []
         prev_pos = 0
         for pos in split_points:
@@ -309,17 +297,12 @@ class LLMAssistSplitter(SplitStrategy):
         else:
             provider_id = self.config.get("llm_assist_provider_id", "")
         
-        # 获取system prompt（分段规则）和 user prompt模板
         system_prompt = self.config.get("llm_split_system_prompt", "")
-        user_template = self.config.get("llm_split_prompt",
-            "\u539f\u6587\uff1a\n{text}")
-        
-        # 超时时间可配置
+        user_template = self.config.get("llm_split_prompt", "\u539f\u6587\uff1a\n{text}")
         llm_timeout = float(self.config.get("llm_timeout", 30.0))
         
         logger.info(f"[Nova-Splitter] \u8bfb\u53d6\u5230\u7684provider_id: '{provider_id}'")
         
-        # 获取Provider
         provider = None
         if provider_id:
             provider = self.context.get_provider_by_id(provider_id)
@@ -338,14 +321,12 @@ class LLMAssistSplitter(SplitStrategy):
         user_prompt = user_template.format(n=target_segments, text=text)
         
         try:
-            logger.info(f"[Nova-Splitter] \u5f00\u59cb\u8c03\u7528LLM\u5206\u6bb5 (provider: {provider_id or 'default'}, timeout: {llm_timeout}s, system_prompt: {'yes' if system_prompt else 'no'})")
+            logger.info(f"[Nova-Splitter] \u5f00\u59cb\u8c03\u7528LLM\u5206\u6bb5 (provider: {provider_id or 'default'}, timeout: {llm_timeout}s)")
             
-            # 构建调用参数
             call_kwargs = {
                 "prompt": user_prompt,
                 "session_id": uuid.uuid4().hex,
             }
-            # 如果配置了system_prompt，使用system_prompt参数
             if system_prompt:
                 call_kwargs["system_prompt"] = system_prompt
             
@@ -354,7 +335,6 @@ class LLMAssistSplitter(SplitStrategy):
                 timeout=llm_timeout
             )
             
-            # 安全获取completion_text
             completion_text = None
             if response:
                 try:
@@ -378,16 +358,14 @@ class LLMAssistSplitter(SplitStrategy):
                     logger.info(f"[Nova-Splitter] LLM\u5206\u6bb5\u6210\u529f: {len(segments)} \u6bb5")
                     return SplitResult(segments=segments, split_points=[])
             
-            logger.warning(f"[Nova-Splitter] LLM\u8fd4\u56de\u683c\u5f0f\u5f02\u5e38\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5: {result_text[:100]}")
+            logger.warning(f"[Nova-Splitter] LLM\u8fd4\u56de\u683c\u5f0f\u5f02\u5e38\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
             
         except asyncio.TimeoutError:
-            logger.error(f"[Nova-Splitter] LLM分段超时({llm_timeout}s)，回退到按字数分段")
+            logger.error(f"[Nova-Splitter] LLM\u5206\u6bb5\u8d85\u65f6({llm_timeout}s)\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
         except Exception as e:
             logger.error(f"[Nova-Splitter] LLM\u5206\u6bb5\u5931\u8d25: {type(e).__name__}: {e}")
             logger.debug(f"[Nova-Splitter] LLM\u5206\u6bb5\u5f02\u5e38\u8be6\u60c5:\n{traceback.format_exc()}")
         
-        # 回退到按字数分段
-        logger.info(f"[Nova-Splitter] \u56de\u9000\u4f7f\u7528\u5b57\u6570\u5206\u6bb5")
         fallback = CharCountSplitter(self.config)
         return fallback.split(text)
     
@@ -450,39 +428,251 @@ class PunctuationProcessor:
             logger.error(f"[Nova-Splitter] \u81ea\u5b9a\u4e49\u6b63\u5219\u9519\u8bef: {e}")
             return text
 
-@register("nova-splitter", "Nova", "智能消息分段插件 - 支持按字数/标点/LLM分段，智能标点清理", "1.1.1")
+@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠模式", "1.2.0")
 class NovaSplitterPlugin(Star):
-    """Nova智能分段插件 v1.1.1"""
+    """Nova智能分段插件 v1.2.0"""
     
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
         self.punctuation_processor = PunctuationProcessor(dict(config))
-        logger.info("[Nova-Splitter] 插件已初始化 v1.1.1")
+        
+        # 思维链缓存: {session_id: thought_content}
+        self.thought_cache: Dict[str, str] = {}
+        
+        # 睡眠状态: 全局标志
+        self.is_sleeping: bool = False
+        
+        logger.info("[Nova-Splitter] 插件已初始化 v1.2.0")
         logger.info(f"[Nova-Splitter] 分段模式: {config.get('split_mode', 'char_count')}")
-        logger.info(f"[Nova-Splitter] 标点清理模式: {config.get('punctuation_clean_mode', 'edge_only')}")
+        logger.info(f"[Nova-Splitter] 引导思考: {'启用' if config.get('enable_thought_guide', False) else '关闭'}")
+        logger.info(f"[Nova-Splitter] 睡眠模式: {'启用' if config.get('enable_sleep_mode', False) else '关闭'}")
+    
+    # ==================== 引导思考：注入 system prompt ====================
+    
+    @filter.on_llm_request()
+    async def on_llm_request(self, event: AstrMessageEvent, request: ProviderRequest):
+        """在LLM请求前注入引导思考prompt + 睡眠拦截（含白名单）"""
+        
+        # 睡眠模式检查
+        if self.is_sleeping and self.config.get("enable_sleep_mode", False):
+            # 检查白名单放行
+            if self._check_sleep_whitelist(event):
+                logger.info("[Nova-Splitter] 睡眠模式白名单放行")
+            else:
+                logger.info("[Nova-Splitter] AI正在睡觉，拦截LLM请求")
+                event.stop_event()
+                return
+        
+        # 引导思考：追加到 system_prompt 末尾
+        if self.config.get("enable_thought_guide", False):
+            guide_prompt = self.config.get("thought_guide_prompt", "")
+            if guide_prompt:
+                if request.system_prompt:
+                    request.system_prompt += "\n\n" + guide_prompt
+                else:
+                    request.system_prompt = guide_prompt
+                logger.info("[Nova-Splitter] 已注入引导思考prompt")
+    
+    def _check_sleep_whitelist(self, event: AstrMessageEvent) -> bool:
+        """检查当前消息是否在睡眠白名单中
+        
+        白名单群聊：必须@bot才放行
+        白名单私聊：直接放行
+        """
+        # 获取白名单配置
+        wl_groups_str = self.config.get("sleep_whitelist_groups", "")
+        wl_users_str = self.config.get("sleep_whitelist_users", "")
+        wl_groups = [g.strip() for g in wl_groups_str.split(",") if g.strip()]
+        wl_users = [u.strip() for u in wl_users_str.split(",") if u.strip()]
+        
+        group_id = event.get_group_id()
+        sender_id = event.get_sender_id()
+        
+        # 群聊白名单检查
+        if group_id and group_id in wl_groups:
+            # 群聊必须@bot才放行
+            bot_id = event.get_self_id()
+            chain = event.get_messages()
+            is_at_bot = False
+            for comp in chain:
+                if isinstance(comp, At) and str(comp.qq) == str(bot_id):
+                    is_at_bot = True
+                    break
+            if is_at_bot:
+                logger.info(f"[Nova-Splitter] 白名单群 {group_id} + @bot，放行")
+                return True
+            else:
+                logger.info(f"[Nova-Splitter] 白名单群 {group_id} 但未@bot，不放行")
+                return False
+        
+        # 私聊白名单检查
+        if not group_id and sender_id in wl_users:
+            logger.info(f"[Nova-Splitter] 白名单用户 {sender_id} 私聊，放行")
+            return True
+        
+        return False
+    
+    # ==================== 思维链拦截 + 沉默机制 ====================
     
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        """标记LLM响应"""
+        """拦截LLM响应：提取思维链、检测沉默、标记LLM回复"""
         setattr(event, "__is_llm_reply", True)
-        logger.info(f"[Nova-Splitter] 检测到LLM响应，已标记事件")
+        
+        if not self.config.get("enable_thought_guide", False):
+            logger.info(f"[Nova-Splitter] 检测到LLM响应，已标记事件")
+            return
+        
+        # 获取回复文本
+        completion_text = resp.completion_text
+        if not completion_text:
+            return
+        
+        # 提取思维链内容
+        tag = self.config.get("thought_tag", "thought")
+        thought_pattern = re.compile(
+            rf'<{re.escape(tag)}>(.*?)</{re.escape(tag)}>',
+            re.DOTALL
+        )
+        
+        thought_match = thought_pattern.search(completion_text)
+        thought_content = ""
+        reply_content = completion_text
+        
+        if thought_match:
+            thought_content = thought_match.group(1).strip()
+            # 从回复中移除思维链部分
+            reply_content = thought_pattern.sub('', completion_text).strip()
+            
+            # 缓存思维链（按 session_id 保留最近1条）
+            session_id = event.get_session_id()
+            self.thought_cache[session_id] = thought_content
+            logger.info(f"[Nova-Splitter] 提取思维链: {thought_content[:80]}...")
+            logger.info(f"[Nova-Splitter] 实际回复: {reply_content[:80]}...")
+        
+        # 检测沉默关键词
+        silence_keywords_str = self.config.get("silence_keywords", "沉默,静默,不想回复,不回复,不想搭理,没必要回复")
+        silence_keywords = [kw.strip() for kw in silence_keywords_str.split(",") if kw.strip()]
+        
+        # 检查回复内容是否触发沉默（用 [沉默] 或包含沉默关键词）
+        reply_stripped = reply_content.strip()
+        should_silence = False
+        
+        # 检查 [xxx] 格式的沉默标记
+        bracket_match = re.match(r'^\[(.+?)\]$', reply_stripped)
+        if bracket_match:
+            bracket_content = bracket_match.group(1)
+            for kw in silence_keywords:
+                if kw in bracket_content:
+                    should_silence = True
+                    break
+        
+        # 也检查纯文本是否就是沉默关键词
+        if not should_silence and reply_stripped:
+            for kw in silence_keywords:
+                if reply_stripped == kw or reply_stripped == f"[{kw}]":
+                    should_silence = True
+                    break
+        
+        if should_silence:
+            logger.info(f"[Nova-Splitter] AI决定沉默，拦截回复: {reply_stripped}")
+            event.stop_event()
+            return
+        
+        # 将清理后的回复写回
+        if thought_match:
+            resp.completion_text = reply_content
+            logger.info(f"[Nova-Splitter] 已移除思维链，回复内容已更新")
+    
+    # ==================== 指令：想啥呢 / 在想啥 ====================
+    
+    @filter.command("想啥呢", alias={"在想啥"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def cmd_what_thinking(self, event: AstrMessageEvent):
+        """查看AI最近一次的思维链内容（管理员专用）
+        
+        输出的内容会进入上下文，AI能看到自己的想法被公开了
+        """
+        setattr(event, "__nova_splitter_own_cmd", True)
+        session_id = event.get_session_id()
+        thought = self.thought_cache.get(session_id, "")
+        
+        if thought:
+            tag = self.config.get("thought_tag", "thought")
+            # 用一种AI能理解的格式输出，让她看到后产生"想法被翻出来了"的羞耻感
+            yield event.plain_result(
+                f"刚才心里想的是：\n<{tag}>{thought}</{tag}>"
+            )
+        else:
+            yield event.plain_result("最近没有在想什么哦")
+    
+    # ==================== 指令：睡觉 / 起床 ====================
+    
+    @filter.command("睡觉", alias={"睡吧", "去睡觉", "晚安"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def cmd_sleep(self, event: AstrMessageEvent):
+        """让AI进入睡眠模式（管理员专用）"""
+        setattr(event, "__nova_splitter_own_cmd", True)
+        if not self.config.get("enable_sleep_mode", False):
+            yield event.plain_result("睡眠模式未启用")
+            return
+        
+        if self.is_sleeping:
+            yield event.plain_result("嗯...已经睡了...")
+            return
+        
+        self.is_sleeping = True
+        logger.info("[Nova-Splitter] AI已进入睡眠模式")
+        yield event.plain_result("嗯 晚安（")
+    
+    @filter.command("起床", alias={"醒醒", "早安", "起来"})
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    async def cmd_wake(self, event: AstrMessageEvent):
+        """唤醒AI（管理员专用）"""
+        setattr(event, "__nova_splitter_own_cmd", True)
+        if not self.config.get("enable_sleep_mode", False):
+            yield event.plain_result("睡眠模式未启用")
+            return
+        
+        if not self.is_sleeping:
+            yield event.plain_result("本来就醒着呢")
+            return
+        
+        self.is_sleeping = False
+        logger.info("[Nova-Splitter] AI已从睡眠模式唤醒")
+        yield event.plain_result("唔...早安（")
+    
+    # ==================== 消息分段处理 ====================
     
     @filter.on_decorating_result(priority=-100000000000000000)
     async def on_decorating_result(self, event: AstrMessageEvent):
-        """处理消息分段 - 带完整异常保护"""
+        """处理消息分段 + 完全静默拦截"""
         logger.info(f"[Nova-Splitter] on_decorating_result 触发")
+        
+        # 完全静默检查：睡眠模式 + sleep_full_silence 开启时
+        # 拦截所有非本插件指令的消息发送
+        if (self.is_sleeping
+            and self.config.get("enable_sleep_mode", False)
+            and self.config.get("sleep_full_silence", False)
+            and not getattr(event, "__nova_splitter_own_cmd", False)):
+            
+            # 白名单放行检查
+            if not self._check_sleep_whitelist(event):
+                logger.info("[Nova-Splitter] 完全静默模式：拦截消息发送")
+                result = event.get_result()
+                if result and result.chain:
+                    result.chain.clear()
+                return
         
         try:
             await self._do_split(event)
         except Exception as e:
             logger.error(f"[Nova-Splitter] on_decorating_result 发生未预期异常: {type(e).__name__}: {e}")
             logger.error(f"[Nova-Splitter] 异常详情:\n{traceback.format_exc()}")
-            # 异常时不修改 result，让框架正常发送原文
     
     async def _do_split(self, event: AstrMessageEvent):
         """实际的分段处理逻辑"""
-        # 防重入检查
         if getattr(event, "__nova_splitter_processed", False):
             logger.info(f"[Nova-Splitter] 已处理过，跳过")
             return
@@ -492,7 +682,6 @@ class NovaSplitterPlugin(Star):
             logger.info(f"[Nova-Splitter] 无结果或chain为空")
             return
         
-        # 作用范围检查
         split_scope = self.config.get("split_scope", "llm_only")
         is_llm_reply = getattr(event, "__is_llm_reply", False)
         
@@ -502,32 +691,23 @@ class NovaSplitterPlugin(Star):
             logger.info(f"[Nova-Splitter] 非LLM回复，跳过")
             return
         
-        # 提取文本内容，同时记录非文本组件的位置
-        # 同时解析 Plain 文本中的 [at:xxx] / [At:xxx] 标记，转换为 At 组件
         full_text = ""
-        # comp_positions: list of (char_offset, component) 记录非文本组件在纯文本中的位置
         comp_positions = []
-        
-        # 用于匹配文本中的 [at:数字] 和 [At:数字] 标记
         at_text_regex = re.compile(r'\[(?:at|At)[:：]\s*(\d+)\]', re.IGNORECASE)
         
         chain_debug = []
         for comp in result.chain:
             if isinstance(comp, Plain):
-                # 解析 Plain 文本中的 [at:xxx] 标记
                 text = comp.text
                 last_end = 0
                 for m in at_text_regex.finditer(text):
-                    # 添加标记之前的文本
                     before = text[last_end:m.start()]
                     if before:
                         full_text += before
-                    # 记录 At 组件的偏移量
                     at_qq = m.group(1)
                     comp_positions.append((len(full_text), At(qq=at_qq)))
                     logger.info(f"[Nova-Splitter] 解析到文本中的at标记: [at:{at_qq}] 偏移量={len(full_text)}")
                     last_end = m.end()
-                # 添加最后一段文本
                 remaining = text[last_end:]
                 if remaining:
                     full_text += remaining
@@ -542,17 +722,14 @@ class NovaSplitterPlugin(Star):
             logger.info(f"[Nova-Splitter] 文本为空，跳过")
             return
         
-        # 长度检查
         min_length = self.config.get("max_length_no_split", 50)
         logger.info(f"[Nova-Splitter] 文本长度={len(full_text)}, 阈值={min_length}")
         if len(full_text) < min_length:
             logger.info(f"[Nova-Splitter] 文本过短，跳过")
             return
         
-        # 标记已处理
         setattr(event, "__nova_splitter_processed", True)
         
-        # 选择分段策略
         split_mode = self.config.get("split_mode", "char_count")
         logger.info(f"[Nova-Splitter] 开始处理，模式={split_mode}, 文本长度={len(full_text)}")
         
@@ -571,26 +748,21 @@ class NovaSplitterPlugin(Star):
                 if len(split_result.segments) < target:
                     char_splitter = CharCountSplitter(dict(self.config))
                     split_result = char_splitter.split(full_text)
-            else:  # char_count
+            else:
                 splitter = CharCountSplitter(dict(self.config))
                 split_result = splitter.split(full_text)
         except Exception as split_err:
             logger.error(f"[Nova-Splitter] 分段策略执行失败: {type(split_err).__name__}: {split_err}")
             logger.error(f"[Nova-Splitter] 分段异常详情:\n{traceback.format_exc()}")
-            # 分段失败时不修改原文
             return
         
         segments = split_result.segments
         
-        # 如果只有一段，不处理
         if len(segments) <= 1:
             logger.info(f"[Nova-Splitter] 分段结果只有1段，跳过")
             return
         
-        # 标点处理
         segments = self.punctuation_processor.process(segments, split_result.split_points)
-        
-        # 过滤空段
         segments = [s for s in segments if s.strip()]
         
         if len(segments) <= 1:
@@ -599,17 +771,13 @@ class NovaSplitterPlugin(Star):
         
         logger.info(f"[Nova-Splitter] 消息被分为 {len(segments)} 段")
         
-        # 分离 Reply 组件（保留到最后一段交给框架）
         reply_components = [c for c in result.chain if isinstance(c, Reply)]
         
-        # 计算每个分段在 full_text 中的字符范围 [seg_start, seg_end)
-        # 用于将非文本组件按偏移量分配到正确的段
-        seg_ranges = []  # list of (start_offset, end_offset)
+        seg_ranges = []
         offset = 0
         for seg_text in segments:
             seg_start = full_text.find(seg_text, offset)
             if seg_start == -1:
-                # LLM 模式下分段文本可能被修改过，用累积偏移量
                 seg_start = offset
             seg_end = seg_start + len(seg_text)
             seg_ranges.append((seg_start, seg_end))
@@ -618,39 +786,31 @@ class NovaSplitterPlugin(Star):
         logger.info(f"[Nova-Splitter] 分段范围: {seg_ranges}")
         logger.info(f"[Nova-Splitter] 非文本组件位置: {[(pos, type(c).__name__) for pos, c in comp_positions]}")
         
-        # 构建分段消息链，按偏移量分配非文本组件
         message_segments = []
         for i, seg_text in enumerate(segments):
             seg_chain = []
             seg_start, seg_end = seg_ranges[i]
             
-            # 找到属于这个段的非文本组件（按偏移量匹配）
-            # 组件偏移量在 [seg_start, seg_end) 范围内的，属于这个段
             for comp_offset, comp in comp_positions:
                 if isinstance(comp, Reply):
-                    continue  # Reply 单独处理
+                    continue
                 if seg_start <= comp_offset < seg_end:
-                    # 在文本的对应位置插入组件
-                    # 先添加组件之前的文本部分
                     text_before = seg_text[:comp_offset - seg_start]
                     text_after = seg_text[comp_offset - seg_start:]
                     if text_before:
                         seg_chain.append(Plain(text_before))
                     seg_chain.append(comp)
-                    seg_text = text_after  # 剩余文本
-                    seg_start = comp_offset  # 更新起始偏移
+                    seg_text = text_after
+                    seg_start = comp_offset
             
-            # 添加剩余文本
             if seg_text:
                 seg_chain.append(Plain(seg_text))
             
-            # 如果这个段没有任何内容，添加空 Plain
             if not seg_chain:
                 seg_chain.append(Plain(""))
             
             message_segments.append(seg_chain)
         
-        # 发送前 N-1 段 (纯文本，不带Reply)
         failed_texts = []
         for i in range(len(message_segments) - 1):
             seg_chain = message_segments[i]
@@ -672,20 +832,14 @@ class NovaSplitterPlugin(Star):
                 logger.error(f"[Nova-Splitter] 发送分段 {i+1} 失败: {e}")
                 failed_texts.append(seg_text)
         
-        # 最后一段交给框架
         last_chain = message_segments[-1]
         
-        # 如果有发送失败的段落，合并到最后一段开头
         if failed_texts:
             last_text = "".join([c.text for c in last_chain if isinstance(c, Plain)])
             combined_text = "\n".join(failed_texts) + "\n" + last_text
             last_chain = [Plain(combined_text)]
-            for comp in non_reply_components:
-                last_chain.append(comp)
             logger.info(f"[Nova-Splitter] 有 {len(failed_texts)} 段发送失败，已合并到最后一段")
         
-        # 将其他插件(如OutputPro)添加的Reply保留到最后一段
-        # 这样框架发送最后一段时会带上引用
         for reply_comp in reply_components:
             last_chain.insert(0, reply_comp)
         
@@ -721,5 +875,5 @@ class NovaSplitterPlugin(Star):
             base = self.config.get("linear_base", 0.3)
             factor = self.config.get("linear_factor", 0.05)
             return min(base + len(text) * factor, 3.0)
-        else:  # fixed
+        else:
             return self.config.get("fixed_delay", 1.0)

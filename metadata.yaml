@@ -1,6 +1,6 @@
 name: astrbot_plugin_nova_splitter
 display_name: 智能分段输出
-desc: 智能消息分段插件 - 支持按字数均分/按标点分段/LLM智能分段，边界标点清理(保留句内标点)
-version: v1.1.1
+desc: 智能消息分段 + 引导思考 + 睡眠模式 - 支持分段/思维链拦截/沉默机制/休眠唤醒
+version: v1.2.0
 author: 辉宝
 repo: https://github.com/YumenoSayuri/astrbot_plugin_nova_splitter

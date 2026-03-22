@@ -152,5 +152,65 @@
     "default": true,
     "description": "保留回复引用",
     "hint": "开启后在第一段消息中引用用户原消息"
+  },
+  "enable_thought_guide": {
+    "type": "bool",
+    "default": false,
+    "description": "启用引导思考",
+    "hint": "开启后会在system prompt末尾追加引导指令，让模型先输出内心思考再回复。思考内容会被插件拦截，不会发送给用户"
+  },
+  "thought_guide_prompt": {
+    "type": "string",
+    "default": "【内部思考协议】\n在你每次回复之前，你必须先在<thought>标签内进行一段简短的内心独白，然后再输出真正的回复内容。\n\n<thought>标签内需要思考的内容：\n1. 简单回忆一下刚才的对话脉络和自己上次说了什么\n2. 判断这条消息值不值得回复，要不要搭理\n3. 如果要回，想想回什么内容、用什么语气、要不要转移话题\n4. 如果你觉得完全不想回复或没必要回复，在thought里写明原因，然后在回复部分只写 [沉默] 即可\n\n格式要求（严格遵守）：\n<thought>你的内心思考过程写在这里</thought>\n这里是你真正要发出去的回复内容\n\n注意：<thought>标签及其内容不会被用户看到，这是你的私密思考空间。回复部分才是真正发送给用户的内容。",
+    "description": "引导思考提示词",
+    "hint": "追加到system prompt末尾的引导指令。用于让模型先思考再回复。可自定义修改"
+  },
+  "thought_tag": {
+    "type": "string",
+    "default": "thought",
+    "description": "思维标签名",
+    "hint": "用于包裹思维内容的XML标签名，默认为thought，即<thought>...</thought>"
+  },
+  "silence_keywords": {
+    "type": "string",
+    "default": "沉默,静默,不想回复,不回复,不想搭理,没必要回复",
+    "description": "沉默关键词",
+    "hint": "当AI回复内容（去除thought后）包含这些关键词时，插件会完全拦截回复实现沉默。用逗号分隔"
+  },
+  "enable_sleep_mode": {
+    "type": "bool",
+    "default": false,
+    "description": "启用睡眠模式功能",
+    "hint": "开启后，管理员可以通过指令让AI进入/退出睡眠状态。睡眠中会拦截所有LLM请求"
+  },
+  "sleep_commands": {
+    "type": "string",
+    "default": "睡觉,睡吧,去睡觉,晚安",
+    "description": "睡觉指令",
+    "hint": "触发睡眠的指令列表，用逗号分隔。需要管理员权限"
+  },
+  "wake_commands": {
+    "type": "string",
+    "default": "起床,醒醒,早安,起来",
+    "description": "起床指令",
+    "hint": "唤醒AI的指令列表，用逗号分隔。需要管理员权限"
+  },
+  "sleep_whitelist_groups": {
+    "type": "string",
+    "default": "",
+    "description": "睡眠白名单群号",
+    "hint": "睡眠模式下仍允许响应的群号，用逗号分隔。白名单群聊中必须@bot才会放行LLM请求"
+  },
+  "sleep_whitelist_users": {
+    "type": "string",
+    "default": "",
+    "description": "睡眠白名单QQ号",
+    "hint": "睡眠模式下仍允许响应的私人QQ号，用逗号分隔。白名单用户的私聊直接放行"
+  },
+  "sleep_full_silence": {
+    "type": "bool",
+    "default": false,
+    "description": "睡眠时完全静默",
+    "hint": "开启后睡眠模式下会拦截所有消息发送（包括其他插件的回复），实现完全静默。关闭则仅拦截LLM请求。本插件的管理员指令（起床/想啥呢等）不受影响"
   }
 }
