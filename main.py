@@ -1,5 +1,5 @@
 """
-Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.3.0
+Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.3.1
 作者: Nova for 辉宝主人
 功能:
   1. 按字数均分分段（强制标点边界，绝不在词语中间断开）
@@ -433,9 +433,9 @@ class PunctuationProcessor:
             logger.error(f"[Nova-Splitter] \u81ea\u5b9a\u4e49\u6b63\u5219\u9519\u8bef: {e}")
             return text
 
-@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠联动", "1.3.0")
+@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠联动", "1.3.1")
 class NovaSplitterPlugin(Star):
-    """Nova智能分段插件 v1.3.0"""
+    """Nova智能分段插件 v1.3.1"""
     
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -453,7 +453,7 @@ class NovaSplitterPlugin(Star):
         # 手动睡眠覆盖：True=手动睡觉, False=手动起床, None=自动（由日程决定）
         self._manual_sleep_override: Optional[bool] = None
         
-        logger.info("[Nova-Splitter] 插件已初始化 v1.3.0")
+        logger.info("[Nova-Splitter] 插件已初始化 v1.3.1")
         logger.info(f"[Nova-Splitter] 分段模式: {config.get('split_mode', 'char_count')}")
         logger.info(f"[Nova-Splitter] 引导思考: {'启用' if config.get('enable_thought_guide', False) else '关闭'}")
         logger.info(f"[Nova-Splitter] 睡眠模式: {'启用' if config.get('enable_sleep_mode', False) else '关闭'}")
@@ -584,6 +584,14 @@ class NovaSplitterPlugin(Star):
             self.thought_cache[session_id] = thought_content
             logger.info(f"[Nova-Splitter] 提取思维链: {thought_content[:80]}...")
             logger.info(f"[Nova-Splitter] 实际回复: {reply_content[:80]}...")
+            
+            # 转发思维链到指定目标
+            if self.config.get("thought_forward_enabled", False):
+                forward_target = self.config.get("thought_forward_target", "").strip()
+                if forward_target and thought_content:
+                    asyncio.create_task(
+                        self._forward_thought(event, thought_content, forward_target)
+                    )
         else:
             # 这次回复没有思维链，清空上次的缓存
             session_id = event.get_session_id()
@@ -620,8 +628,8 @@ class NovaSplitterPlugin(Star):
             event.stop_event()
             return
         
-        # 将清理后的回复写回
-        if thought_match:
+        # 将清理后的回复写回（只要找到了思维链就写回，不管是哪种策略）
+        if found_thought:
             resp.completion_text = reply_content
             logger.info(f"[Nova-Splitter] 已移除思维链，回复内容已更新")
     
@@ -685,6 +693,28 @@ class NovaSplitterPlugin(Star):
         self._manual_sleep_override = False  # 手动起床
         self.is_sleeping = False
         yield event.plain_result("唔...早安（")
+    
+    async def _forward_thought(self, event: AstrMessageEvent, thought_content: str, target_umo: str):
+        """转发思维链到指定目标"""
+        try:
+            # 获取来源信息
+            group_id = event.get_group_id()
+            now_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M:%S")
+            
+            if group_id:
+                source_info = f"在群{group_id}"
+            else:
+                sender_id = event.get_sender_id()
+                source_info = f"在私聊({sender_id})"
+            
+            forward_text = f"{source_info} {now_str}思考了：\n{thought_content}"
+            
+            mc = MessageChain()
+            mc.chain = [Plain(forward_text)]
+            await self.context.send_message(target_umo, mc)
+            logger.info(f"[Nova-Splitter] 思维链已转发到 {target_umo}")
+        except Exception as e:
+            logger.error(f"[Nova-Splitter] 思维链转发失败: {e}")
     
     def _get_actual_sleep_state(self) -> bool:
         """获取实际的睡眠状态

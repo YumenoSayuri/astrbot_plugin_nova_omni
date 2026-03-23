@@ -171,6 +171,18 @@
     "description": "思维标签名",
     "hint": "用于包裹思维内容的XML标签名，默认为thought，即<thought>...</thought>"
   },
+  "thought_forward_enabled": {
+    "type": "bool",
+    "default": false,
+    "description": "转发思维链",
+    "hint": "开启后每次提取到思维链都会转发到指定目标（群聊/私聊），方便实时监控AI在想什么"
+  },
+  "thought_forward_target": {
+    "type": "string",
+    "default": "",
+    "description": "思维链转发目标",
+    "hint": "填写UMO格式的转发目标，如 aiocqhttp:FriendMessage:2725025494 或 aiocqhttp:GroupMessage:群号"
+  },
   "silence_keywords": {
     "type": "string",
     "default": "沉默,静默,不想回复,不回复,不想搭理,没必要回复",
