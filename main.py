@@ -702,8 +702,9 @@ class NovaSplitterPlugin(Star):
             now_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M:%S")
             
             if group_id:
-                # 尝试获取群名称
-                group_name = getattr(event.message_obj, 'group_name', None) or ""
+                # 尝试获取群名称（在 message_obj.group 对象上）
+                group_obj = getattr(event.message_obj, 'group', None)
+                group_name = getattr(group_obj, 'group_name', None) or "" if group_obj else ""
                 if group_name:
                     source_info = f"在{group_name}({group_id})"
                 else:
@@ -721,6 +722,30 @@ class NovaSplitterPlugin(Star):
             logger.info(f"[Nova-Splitter] 思维链已转发到 {target_umo}")
         except Exception as e:
             logger.error(f"[Nova-Splitter] 思维链转发失败: {e}")
+    
+    def _strip_thought_from_chain(self, chain: List[BaseMessageComponent]):
+        """从消息链中移除 <thought> 标签内容（兜底清理）"""
+        tag = self.config.get("thought_tag", "thought")
+        tag_e = re.escape(tag)
+        # 匹配完整标签或缺少开头<的标签
+        pattern = re.compile(rf'<?{tag_e}>(.*?)</{tag_e}>', re.DOTALL)
+        
+        for i, comp in enumerate(chain):
+            if isinstance(comp, Plain) and comp.text:
+                original = comp.text
+                # 策略1：正则移除
+                cleaned = pattern.sub('', original)
+                # 策略2：用闭合标签分隔
+                if cleaned == original:
+                    close_tag = f"</{tag}>"
+                    close_pos = original.find(close_tag)
+                    if close_pos > 0:
+                        cleaned = original[close_pos + len(close_tag):]
+                
+                cleaned = cleaned.strip()
+                if cleaned != original.strip():
+                    chain[i] = Plain(cleaned)
+                    logger.info(f"[Nova-Splitter] 兜底清理：从chain中移除了thought标签")
     
     def _get_actual_sleep_state(self) -> bool:
         """获取实际的睡眠状态
@@ -901,8 +926,28 @@ class NovaSplitterPlugin(Star):
     
     @filter.on_decorating_result(priority=-100000000000000000)
     async def on_decorating_result(self, event: AstrMessageEvent):
-        """处理消息分段 + 完全静默拦截"""
+        """处理消息分段 + 完全静默拦截 + 思维链兜底清理"""
         logger.info(f"[Nova-Splitter] on_decorating_result 触发")
+        
+        # 兜底清理：无论是否 LLM 回复，都检查并移除思维链标签
+        # 防止工具调用中间结果泄露思维链
+        if self.config.get("enable_thought_guide", False):
+            result = event.get_result()
+            if result and result.chain:
+                self._strip_thought_from_chain(result.chain)
+                # 清理后如果所有文本都为空，阻止发送（防止工具调用中间结果发空消息）
+                all_text = "".join(
+                    c.text for c in result.chain if isinstance(c, Plain)
+                ).strip()
+                if not all_text:
+                    # 检查是否还有非文本组件（如图片），有的话不阻止
+                    has_non_text = any(
+                        not isinstance(c, (Plain, Reply)) for c in result.chain
+                    )
+                    if not has_non_text:
+                        result.chain.clear()
+                        logger.info("[Nova-Splitter] 兜底清理后文本为空，阻止发送")
+                        return
         
         # 完全静默检查：睡眠模式 + sleep_full_silence 开启时
         # 拦截所有非本插件指令的消息发送
