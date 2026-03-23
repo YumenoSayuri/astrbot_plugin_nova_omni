@@ -697,15 +697,21 @@ class NovaSplitterPlugin(Star):
     async def _forward_thought(self, event: AstrMessageEvent, thought_content: str, target_umo: str):
         """转发思维链到指定目标"""
         try:
-            # 获取来源信息
+            # 获取来源信息（群名称+群号 或 私聊+QQ号）
             group_id = event.get_group_id()
             now_str = datetime.datetime.now().strftime("%Y年%m月%d日%H:%M:%S")
             
             if group_id:
-                source_info = f"在群{group_id}"
+                # 尝试获取群名称
+                group_name = getattr(event.message_obj, 'group_name', None) or ""
+                if group_name:
+                    source_info = f"在{group_name}({group_id})"
+                else:
+                    source_info = f"在群({group_id})"
             else:
                 sender_id = event.get_sender_id()
-                source_info = f"在私聊({sender_id})"
+                sender_name = event.get_sender_name() or sender_id
+                source_info = f"在私聊 {sender_name}({sender_id})"
             
             forward_text = f"{source_info} {now_str}思考了：\n{thought_content}"
             
