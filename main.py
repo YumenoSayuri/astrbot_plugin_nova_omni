@@ -484,28 +484,39 @@ class NovaOmniPlugin(Star):
                 
                 for attempt in range(1, max_retries + 1):
                     try:
-                        logger.info(f"[Nova-Omni] 正在发起底层请求火力打击... (第 {attempt}/{max_retries} 次)")
+                        if attempt == 1:
+                            logger.info(f"[Nova-Omni] 正在发起正常请求... (最长等待: {max_wait_time}s)")
+                        else:
+                            logger.info(f"[Nova-Omni] 正在发起底层拦截重试打击... (第 {attempt}/{max_retries} 次)")
+                        
                         # 控制底层调用的最长等待时间
                         resp = await asyncio.wait_for(original_text_chat(*args, **kwargs), timeout=max_wait_time)
                         
                         if resp and resp.completion_text and resp.completion_text.strip():
-                            logger.info(f"[Nova-Omni] 打击成功！获取到有效回复: {resp.completion_text[:50]}...")
+                            if attempt == 1:
+                                logger.info(f"[Nova-Omni] 请求成功！获取到有效回复: {resp.completion_text[:50]}...")
+                            else:
+                                logger.info(f"[Nova-Omni] 重试打击成功！获取到有效回复: {resp.completion_text[:50]}...")
                             final_resp = resp
                             retry_success = True
                             break
                         else:
-                            logger.warning(f"[Nova-Omni] 警告：第 {attempt} 次打击返回了空内容！准备重新装填火力。")
+                            action_name = "请求" if attempt == 1 else "重试打击"
+                            logger.warning(f"[Nova-Omni] 警告：第 {attempt} 次{action_name}返回了空内容！准备拦截并重新装填火力。")
                     
                     except asyncio.TimeoutError:
-                        logger.warning(f"[Nova-Omni] 警告：第 {attempt} 次打击耗时超过 {max_wait_time} 秒被强制截断！准备重新装填火力。")
+                        action_name = "请求" if attempt == 1 else "重试打击"
+                        logger.warning(f"[Nova-Omni] 警告：第 {attempt} 次{action_name}耗时超过 {max_wait_time} 秒被强制截断！准备拦截并重新装填火力。")
                     except Exception as e:
+                        action_name = "请求" if attempt == 1 else "重试打击"
                         if retry_on_error:
-                            logger.error(f"[Nova-Omni] 警告：第 {attempt} 次打击遭遇底层报错阻击: {type(e).__name__}: {e}，准备强行突围！")
+                            logger.error(f"[Nova-Omni] 警告：第 {attempt} 次{action_name}遭遇底层报错阻击: {type(e).__name__}: {e}，准备强行突围重试！")
                         else:
-                            logger.error(f"[Nova-Omni] 第 {attempt} 次打击遭遇底层报错: {type(e).__name__}: {e}，错误重试未开启，直接抛出。")
+                            logger.error(f"[Nova-Omni] 第 {attempt} 次{action_name}遭遇底层报错: {type(e).__name__}: {e}，错误重试未开启，放弃拦截。")
                             raise e
                 
                 # 常规火力耗尽且启用了备用支援，呼叫备用模型接管
+                last_error = None
                 if not retry_success and use_backup and backup_provider_id:
                     logger.warning(f"[Nova-Omni] 原模型火力完全耗尽！紧急呼叫备用支援: {backup_provider_id}")
                     backup_provider = self.context.get_provider_by_id(backup_provider_id)
@@ -522,16 +533,27 @@ class NovaOmniPlugin(Star):
                                 retry_success = True
                             else:
                                 logger.error("[Nova-Omni] 备用支援打击也返回了空内容。防线彻底失守。")
-                        except asyncio.TimeoutError:
+                                last_error = RuntimeError("备用支援返回了空内容")
+                        except asyncio.TimeoutError as e:
                             logger.error(f"[Nova-Omni] 备用支援打击超时({max_wait_time}s)！防线彻底失守。")
+                            last_error = e
                         except Exception as e:
                             logger.error(f"[Nova-Omni] 备用支援打击遭遇报错: {type(e).__name__}: {e}，防线彻底失守。")
+                            last_error = e
                     else:
                         logger.error(f"[Nova-Omni] 无法链接指定的备用支援 Provider: {backup_provider_id}，防线彻底失守。")
+                        last_error = ValueError(f"未找到备用支援 Provider: {backup_provider_id}")
                 
-                # 如果全部失败，为了不阻断流程，制造一个空的备用回复抛出，让后面的逻辑继续（通常会被过滤）
+                # 如果全部失败，为了避免核心框架崩溃，我们自己构造一个合法的空文本返回（或者带错误提示的返回）
                 if not retry_success and not final_resp:
                     from astrbot.core.provider.entities import LLMResponse
+                    err_msg = ""
+                    if last_error:
+                        err_msg = f"[Nova-Omni 拦截提示: 经过 {max_retries} 次重试和备用接管后仍然失败，报错: {last_error}]"
+                    else:
+                        err_msg = f"[Nova-Omni 拦截提示: 经过 {max_retries} 次重试后，模型依然返回了空内容或卡死。]"
+                    logger.error(err_msg)
+                    # 必须加上 role="assistant"
                     final_resp = LLMResponse(role="assistant", completion_text="")
                     
                 return final_resp
