@@ -1,5 +1,5 @@
 """
-Nova Omni - 全能引擎: 空回重试 + 智能分段 + 引导思考 + 睡眠联动 v1.4.0
+Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.3.1
 作者: Nova for 辉宝主人
 功能:
   1. 按字数均分分段（强制标点边界，绝不在词语中间断开）
@@ -10,7 +10,6 @@ Nova Omni - 全能引擎: 空回重试 + 智能分段 + 引导思考 + 睡眠联
   6. 沉默机制（AI决定不回复时完全拦截）
   7. 睡眠模式（管理员指令控制AI休眠/唤醒）
   8. sexlife联动（自动根据日程切换睡眠/唤醒状态）
-  9. 空回绝对防御（拦截LLM空回并支持自定义原模型或备用模型无限火力重试）
 """
 
 import re
@@ -22,6 +21,8 @@ import asyncio
 import uuid
 import datetime
 import traceback
+from datetime import datetime, date
+import zoneinfo
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional, Tuple
 from dataclasses import dataclass
@@ -307,27 +308,27 @@ class LLMAssistSplitter(SplitStrategy):
         user_template = self.config.get("llm_split_prompt", "\u539f\u6587\uff1a\n{text}")
         llm_timeout = float(self.config.get("llm_timeout", 30.0))
         
-        logger.info(f"[Nova-Omni] \u8bfb\u53d6\u5230\u7684provider_id: '{provider_id}'")
+        logger.info(f"[Nova-Splitter] \u8bfb\u53d6\u5230\u7684provider_id: '{provider_id}'")
         
         provider = None
         if provider_id:
             provider = self.context.get_provider_by_id(provider_id)
             if not provider:
-                logger.warning(f"[Nova-Omni] \u672a\u627e\u5230\u6307\u5b9aProvider: {provider_id}")
+                logger.warning(f"[Nova-Splitter] \u672a\u627e\u5230\u6307\u5b9aProvider: {provider_id}")
         
         if not provider:
-            logger.info(f"[Nova-Omni] \u4f7f\u7528\u4f1a\u8bdd\u9ed8\u8ba4Provider, origin={self.event_origin}")
+            logger.info(f"[Nova-Splitter] \u4f7f\u7528\u4f1a\u8bdd\u9ed8\u8ba4Provider, origin={self.event_origin}")
             provider = self.context.get_using_provider(self.event_origin)
         
         if not provider or not isinstance(provider, Provider):
-            logger.warning("[Nova-Omni] \u672a\u627e\u5230LLM Provider\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
+            logger.warning("[Nova-Splitter] \u672a\u627e\u5230LLM Provider\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
             fallback = CharCountSplitter(self.config)
             return fallback.split(text)
         
         user_prompt = user_template.format(n=target_segments, text=text)
         
         try:
-            logger.info(f"[Nova-Omni] \u5f00\u59cb\u8c03\u7528LLM\u5206\u6bb5 (provider: {provider_id or 'default'}, timeout: {llm_timeout}s)")
+            logger.info(f"[Nova-Splitter] \u5f00\u59cb\u8c03\u7528LLM\u5206\u6bb5 (provider: {provider_id or 'default'}, timeout: {llm_timeout}s)")
             
             call_kwargs = {
                 "prompt": user_prompt,
@@ -346,31 +347,31 @@ class LLMAssistSplitter(SplitStrategy):
                 try:
                     completion_text = response.completion_text
                 except Exception as ct_err:
-                    logger.error(f"[Nova-Omni] \u83b7\u53d6completion_text\u5931\u8d25: {ct_err}")
+                    logger.error(f"[Nova-Splitter] \u83b7\u53d6completion_text\u5931\u8d25: {ct_err}")
             
             if not completion_text:
-                logger.warning(f"[Nova-Omni] LLM\u8fd4\u56de\u7a7a\u5185\u5bb9\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
+                logger.warning(f"[Nova-Splitter] LLM\u8fd4\u56de\u7a7a\u5185\u5bb9\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
                 fallback = CharCountSplitter(self.config)
                 return fallback.split(text)
             
             result_text = completion_text.strip()
-            logger.info(f"[Nova-Omni] LLM\u8fd4\u56de\u5185\u5bb9: {result_text[:100]}...")
+            logger.info(f"[Nova-Splitter] LLM\u8fd4\u56de\u5185\u5bb9: {result_text[:100]}...")
             
             json_match = re.search(r'\[.*\]', result_text, re.DOTALL)
             if json_match:
                 import json
                 segments = json.loads(json_match.group())
                 if isinstance(segments, list) and len(segments) > 0 and all(isinstance(s, str) for s in segments):
-                    logger.info(f"[Nova-Omni] LLM\u5206\u6bb5\u6210\u529f: {len(segments)} \u6bb5")
+                    logger.info(f"[Nova-Splitter] LLM\u5206\u6bb5\u6210\u529f: {len(segments)} \u6bb5")
                     return SplitResult(segments=segments, split_points=[])
             
-            logger.warning(f"[Nova-Omni] LLM\u8fd4\u56de\u683c\u5f0f\u5f02\u5e38\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
+            logger.warning(f"[Nova-Splitter] LLM\u8fd4\u56de\u683c\u5f0f\u5f02\u5e38\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
             
         except asyncio.TimeoutError:
-            logger.error(f"[Nova-Omni] LLM\u5206\u6bb5\u8d85\u65f6({llm_timeout}s)\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
+            logger.error(f"[Nova-Splitter] LLM\u5206\u6bb5\u8d85\u65f6({llm_timeout}s)\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
         except Exception as e:
-            logger.error(f"[Nova-Omni] LLM\u5206\u6bb5\u5931\u8d25: {type(e).__name__}: {e}")
-            logger.debug(f"[Nova-Omni] LLM\u5206\u6bb5\u5f02\u5e38\u8be6\u60c5:\n{traceback.format_exc()}")
+            logger.error(f"[Nova-Splitter] LLM\u5206\u6bb5\u5931\u8d25: {type(e).__name__}: {e}")
+            logger.debug(f"[Nova-Splitter] LLM\u5206\u6bb5\u5f02\u5e38\u8be6\u60c5:\n{traceback.format_exc()}")
         
         fallback = CharCountSplitter(self.config)
         return fallback.split(text)
@@ -431,12 +432,12 @@ class PunctuationProcessor:
         try:
             return re.sub(self.custom_regex, "", text)
         except re.error as e:
-            logger.error(f"[Nova-Omni] \u81ea\u5b9a\u4e49\u6b63\u5219\u9519\u8bef: {e}")
+            logger.error(f"[Nova-Splitter] \u81ea\u5b9a\u4e49\u6b63\u5219\u9519\u8bef: {e}")
             return text
 
-@register("nova-omni", "Nova", "空回兜底 + 智能分段 + 引导思考 + 睡眠联动", "1.4.0")
-class NovaOmniPlugin(Star):
-    """Nova全能引擎插件 v1.4.0"""
+@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠联动", "1.3.1")
+class NovaSplitterPlugin(Star):
+    """Nova智能分段插件 v1.3.1"""
     
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -454,24 +455,18 @@ class NovaOmniPlugin(Star):
         # 手动睡眠覆盖：True=手动睡觉, False=手动起床, None=自动（由日程决定）
         self._manual_sleep_override: Optional[bool] = None
         
-        logger.info("[Nova-Omni] 插件已初始化 v1.4.0 (绝对空回防御已就绪)")
-        logger.info(f"[Nova-Omni] 分段模式: {config.get('split_mode', 'char_count')}")
-        logger.info(f"[Nova-Omni] 引导思考: {'启用' if config.get('enable_thought_guide', False) else '关闭'}")
-        logger.info(f"[Nova-Omni] 睡眠模式: {'启用' if config.get('enable_sleep_mode', False) else '关闭'}")
-        logger.info(f"[Nova-Omni] sexlife联动: {'启用' if config.get('sleep_auto_schedule', False) else '关闭'}")
+        logger.info("[Nova-Splitter] 插件已初始化 v1.3.1")
+        logger.info(f"[Nova-Splitter] 分段模式: {config.get('split_mode', 'char_count')}")
+        logger.info(f"[Nova-Splitter] 引导思考: {'启用' if config.get('enable_thought_guide', False) else '关闭'}")
+        logger.info(f"[Nova-Splitter] 睡眠模式: {'启用' if config.get('enable_sleep_mode', False) else '关闭'}")
+        logger.info(f"[Nova-Splitter] sexlife联动: {'启用' if config.get('sleep_auto_schedule', False) else '关闭'}")
     
-    # ==================== LLM请求拦截：空回兜底状态保存 + 引导思考注入 ====================
+    # ==================== 引导思考：注入 system prompt ====================
     
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, request: ProviderRequest):
-        """在LLM请求前：1. 保存请求武器库用于空回重试 2.注入引导思考prompt 3.睡眠拦截"""
+        """在LLM请求前注入引导思考prompt + 睡眠拦截（含白名单）"""
         
-        # 将原始请求武器和提供商缓存到事件上下文，为后续防御做准备
-        setattr(event, "__nova_omni_provider_request", request)
-        provider = self.context.get_using_provider(event.unified_msg_origin)
-        if provider:
-            setattr(event, "__nova_omni_original_provider", provider)
-            
         # 睡眠状态实时判断（自动模式用时段判断，手动模式用标志）
         actual_sleeping = self._get_actual_sleep_state()
         
@@ -479,28 +474,18 @@ class NovaOmniPlugin(Star):
         if actual_sleeping and self.config.get("enable_sleep_mode", False):
             # 检查白名单放行
             if self._check_sleep_whitelist(event):
-                logger.info("[Nova-Omni] 睡眠模式白名单放行")
+                logger.info("[Nova-Splitter] 睡眠模式白名单放行")
             else:
-                logger.info("[Nova-Omni] AI正在睡觉，拦截LLM请求")
+                logger.info("[Nova-Splitter] AI正在睡觉，拦截LLM请求")
                 event.stop_event()
                 return
         
-        # 引导思考：双重注入（system prompt + 用户消息附加）
+        # 引导思考：单重注入（参考LLMPerception模式，拼接在用户消息前）
         if self.config.get("enable_thought_guide", False):
             guide_prompt = self.config.get("thought_guide_prompt", "")
             if guide_prompt:
-                # 1. system prompt 末尾追加完整引导
-                if request.system_prompt:
-                    request.system_prompt += "\n\n" + guide_prompt
-                else:
-                    request.system_prompt = guide_prompt
-                
-                # 2. 用户消息后追加简短强调提醒（提高遵循率）
-                from astrbot.core.agent.message import TextPart
-                request.extra_user_content_parts.append(
-                    TextPart(text="[系统提醒：回复前必须先输出<thought>思考内容</thought>，然后再写回复]")
-                )
-                logger.info("[Nova-Omni] 已注入引导思考prompt（双重注入）")
+                request.prompt = f"[{guide_prompt}]\n{request.prompt}"
+                logger.info("[Nova-Splitter] 已注入引导思考prompt")
     
     def _check_sleep_whitelist(self, event: AstrMessageEvent) -> bool:
         """检查当前消息是否在睡眠白名单中
@@ -528,101 +513,33 @@ class NovaOmniPlugin(Star):
                     is_at_bot = True
                     break
             if is_at_bot:
-                logger.info(f"[Nova-Omni] 白名单群 {group_id} + @bot，放行")
+                logger.info(f"[Nova-Splitter] 白名单群 {group_id} + @bot，放行")
                 return True
             else:
-                logger.info(f"[Nova-Omni] 白名单群 {group_id} 但未@bot，不放行")
+                logger.info(f"[Nova-Splitter] 白名单群 {group_id} 但未@bot，不放行")
                 return False
         
         # 私聊白名单检查
         if not group_id and sender_id in wl_users:
-            logger.info(f"[Nova-Omni] 白名单用户 {sender_id} 私聊，放行")
+            logger.info(f"[Nova-Splitter] 白名单用户 {sender_id} 私聊，放行")
             return True
         
         return False
     
-    # ==================== 响应拦截：空回重试 + 思维链 + 沉默机制 ====================
+    # ==================== 思维链拦截 + 沉默机制 ====================
     
     @filter.on_llm_response()
     async def on_llm_response(self, event: AstrMessageEvent, resp: LLMResponse):
-        """拦截LLM响应：空回绝对防御与重试、提取思维链、检测沉默、标记LLM回复"""
+        """拦截LLM响应：提取思维链、检测沉默、标记LLM回复"""
         setattr(event, "__is_llm_reply", True)
         
-        # 1. 空回绝对防御与火力重装机制
+        if not self.config.get("enable_thought_guide", False):
+            logger.info(f"[Nova-Splitter] 检测到LLM响应，已标记事件")
+            return
+        
+        # 获取回复文本
         completion_text = resp.completion_text
-        if not completion_text or not completion_text.strip():
-            logger.warning("[Nova-Omni] 警告：检测到LLM返回空内容！触发绝对防御重试机制。")
-            max_retries = self.config.get("empty_retry_count", 3)
-            use_backup = self.config.get("empty_retry_use_backup", False)
-            backup_provider_id = self.config.get("empty_retry_provider_id", "")
-            
-            req = getattr(event, "__nova_omni_provider_request", None)
-            orig_provider = getattr(event, "__nova_omni_original_provider", None)
-            
-            if not req or not orig_provider:
-                logger.error("[Nova-Omni] 缺乏重试弹药(未找到原始请求或Provider)，防御失败，放行空回。")
-                return
-            
-            retry_success = False
-            for attempt in range(1, max_retries + 1):
-                logger.info(f"[Nova-Omni] 正在发起空回重试火力覆盖... (第 {attempt}/{max_retries} 次)")
-                try:
-                    # 获取原模型调用参数
-                    call_kwargs = {
-                        "prompt": req.prompt,
-                        "session_id": req.session_id,
-                        "system_prompt": req.system_prompt,
-                        "image_urls": req.image_urls,
-                        "func_tool": req.func_tool,
-                        "contexts": getattr(req, "contexts", None) or getattr(req, "conversation", None),
-                        "model": req.model,
-                        "extra_user_content_parts": req.extra_user_content_parts,
-                        "tool_calls_result": req.tool_calls_result
-                    }
-                    
-                    # 过滤掉 None 值的参数
-                    call_kwargs = {k: v for k, v in call_kwargs.items() if v is not None}
-                    
-                    new_resp = await orig_provider.text_chat(**call_kwargs)
-                    if new_resp and new_resp.completion_text and new_resp.completion_text.strip():
-                        resp.completion_text = new_resp.completion_text
-                        logger.info(f"[Nova-Omni] 防御成功！在第 {attempt} 次重试获取到有效回复: {resp.completion_text[:50]}...")
-                        retry_success = True
-                        break
-                    else:
-                        logger.warning(f"[Nova-Omni] 第 {attempt} 次重试依然为空。")
-                except Exception as e:
-                    logger.error(f"[Nova-Omni] 第 {attempt} 次重试发生异常: {e}")
-            
-            # 若常规火力耗尽且启用了备用支援，呼叫备用模型
-            if not retry_success and use_backup and backup_provider_id:
-                logger.warning(f"[Nova-Omni] 原模型重试耗尽！呼叫备用支援: {backup_provider_id}")
-                backup_provider = self.context.get_provider_by_id(backup_provider_id)
-                if backup_provider:
-                    try:
-                        # 切换提供商但不改变模型参数名，让备用提供商自己处理默认模型
-                        call_kwargs.pop("model", None)
-                        new_resp = await backup_provider.text_chat(**call_kwargs)
-                        if new_resp and new_resp.completion_text and new_resp.completion_text.strip():
-                            resp.completion_text = new_resp.completion_text
-                            logger.info(f"[Nova-Omni] 备用支援成功！获取到有效回复: {resp.completion_text[:50]}...")
-                            retry_success = True
-                        else:
-                            logger.error("[Nova-Omni] 备用支援也返回了空内容。")
-                    except Exception as e:
-                        logger.error(f"[Nova-Omni] 备用支援调用异常: {e}")
-                else:
-                    logger.error(f"[Nova-Omni] 未找到指定的备用支援 Provider: {backup_provider_id}")
-            
-            if not retry_success:
-                logger.error("[Nova-Omni] 所有重试与支援均宣告失败，防线被击穿，继续放行。")
-            
-            # 重新获取重试后可能更新的文本
-            completion_text = resp.completion_text
-
-        # 2. 如果重试后依然为空，或者未开启引导思考，直接返回
-        if not completion_text or not self.config.get("enable_thought_guide", False):
-            logger.info(f"[Nova-Omni] 响应处理完毕。")
+        if not completion_text:
             return
         
         # 提取思维链内容（多重兼容）
@@ -652,13 +569,13 @@ class NovaOmniPlugin(Star):
                 thought_content = completion_text[:close_pos].strip()
                 reply_content = completion_text[close_pos + len(close_tag):].strip()
                 found_thought = True
-                logger.info(f"[Nova-Omni] 兼容模式：以 </{tag}> 为分隔点提取思维链")
+                logger.info(f"[Nova-Splitter] 兼容模式：以 </{tag}> 为分隔点提取思维链")
         
         if found_thought:
             session_id = event.get_session_id()
             self.thought_cache[session_id] = thought_content
-            logger.info(f"[Nova-Omni] 提取思维链: {thought_content[:80]}...")
-            logger.info(f"[Nova-Omni] 实际回复: {reply_content[:80]}...")
+            logger.info(f"[Nova-Splitter] 提取思维链: {thought_content[:80]}...")
+            logger.info(f"[Nova-Splitter] 实际回复: {reply_content[:80]}...")
             
             # 转发思维链到指定目标
             if self.config.get("thought_forward_enabled", False):
@@ -672,7 +589,7 @@ class NovaOmniPlugin(Star):
             session_id = event.get_session_id()
             if session_id in self.thought_cache:
                 del self.thought_cache[session_id]
-                logger.info(f"[Nova-Omni] 本次回复无思维链，已清空缓存")
+                logger.info(f"[Nova-Splitter] 本次回复无思维链，已清空缓存")
         
         # 检测沉默关键词
         silence_keywords_str = self.config.get("silence_keywords", "沉默,静默,不想回复,不回复,不想搭理,没必要回复")
@@ -699,14 +616,14 @@ class NovaOmniPlugin(Star):
                     break
         
         if should_silence:
-            logger.info(f"[Nova-Omni] AI决定沉默，拦截回复: {reply_stripped}")
+            logger.info(f"[Nova-Splitter] AI决定沉默，拦截回复: {reply_stripped}")
             event.stop_event()
             return
         
         # 将清理后的回复写回（只要找到了思维链就写回，不管是哪种策略）
         if found_thought:
             resp.completion_text = reply_content
-            logger.info(f"[Nova-Omni] 已移除思维链，回复内容已更新")
+            logger.info(f"[Nova-Splitter] 已移除思维链，回复内容已更新")
     
     # ==================== 指令：想啥呢 / 在想啥 ====================
     
@@ -717,15 +634,15 @@ class NovaOmniPlugin(Star):
         
         输出的内容会进入上下文，AI能看到自己的想法被公开了
         """
-        setattr(event, "__nova_omni_own_cmd", True)
+        setattr(event, "__nova_splitter_own_cmd", True)
         session_id = event.get_session_id()
         thought = self.thought_cache.get(session_id, "")
         
         if thought:
-            # 清理 markdown 格式标记（**加粗**等），避免触发内容过滤器
-            clean_thought = thought.replace("**", "").replace("__", "")
+            tag = self.config.get("thought_tag", "thought")
+            # 用一种AI能理解的格式输出，让她看到后产生"想法被翻出来了"的羞耻感
             yield event.plain_result(
-                f"刚才心里想的是：\n{clean_thought}"
+                f"刚才心里想的是：\n<{tag}>{thought}</{tag}>"
             )
         else:
             yield event.plain_result("最近没有在想什么哦")
@@ -736,7 +653,7 @@ class NovaOmniPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_sleep(self, event: AstrMessageEvent):
         """让AI进入睡眠模式（管理员专用）"""
-        setattr(event, "__nova_omni_own_cmd", True)
+        setattr(event, "__nova_splitter_own_cmd", True)
         if not self.config.get("enable_sleep_mode", False):
             yield event.plain_result("睡眠模式未启用")
             return
@@ -747,14 +664,14 @@ class NovaOmniPlugin(Star):
         
         self._manual_sleep_override = True  # 手动睡觉
         self.is_sleeping = True
-        logger.info("[Nova-Omni] AI已进入睡眠模式（手动）")
+        logger.info("[Nova-Splitter] AI已进入睡眠模式（手动）")
         yield event.plain_result("嗯 晚安（")
     
     @filter.command("快点起床")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_wake(self, event: AstrMessageEvent):
         """唤醒AI（管理员专用）"""
-        setattr(event, "__nova_omni_own_cmd", True)
+        setattr(event, "__nova_splitter_own_cmd", True)
         if not self.config.get("enable_sleep_mode", False):
             yield event.plain_result("睡眠模式未启用")
             return
@@ -764,7 +681,7 @@ class NovaOmniPlugin(Star):
             return
         
         self.is_sleeping = False
-        logger.info("[Nova-Omni] AI已从睡眠模式唤醒")
+        logger.info("[Nova-Splitter] AI已从睡眠模式唤醒")
         self._manual_sleep_override = False  # 手动起床
         self.is_sleeping = False
         yield event.plain_result("唔...早安（")
@@ -794,9 +711,9 @@ class NovaOmniPlugin(Star):
             mc = MessageChain()
             mc.chain = [Plain(forward_text)]
             await self.context.send_message(target_umo, mc)
-            logger.info(f"[Nova-Omni] 思维链已转发到 {target_umo}")
+            logger.info(f"[Nova-Splitter] 思维链已转发到 {target_umo}")
         except Exception as e:
-            logger.error(f"[Nova-Omni] 思维链转发失败: {e}")
+            logger.error(f"[Nova-Splitter] 思维链转发失败: {e}")
     
     def _strip_thought_from_chain(self, chain: List[BaseMessageComponent], event: AstrMessageEvent = None):
         """从消息链中移除 <thought> 标签内容（兜底清理），同时提取并转发"""
@@ -827,7 +744,7 @@ class NovaOmniPlugin(Star):
                 cleaned = cleaned.strip()
                 if cleaned != original.strip():
                     chain[i] = Plain(cleaned)
-                    logger.info(f"[Nova-Omni] 兜底清理：从chain中移除了thought标签")
+                    logger.info(f"[Nova-Splitter] 兜底清理：从chain中移除了thought标签")
                     
                     # 兜底转发：如果提取到思维内容且启用了转发
                     if thought_extracted and event and self.config.get("thought_forward_enabled", False):
@@ -866,10 +783,10 @@ class NovaOmniPlugin(Star):
     async def on_astrbot_loaded(self, *args, **kwargs):
         """AstrBot 加载完成后启动 sexlife 联动每日定时读取"""
         if not self.config.get("sleep_auto_schedule", False):
-            logger.info("[Nova-Omni] sexlife联动未启用，跳过")
+            logger.info("[Nova-Splitter] sexlife联动未启用，跳过")
             return
         if not self.config.get("enable_sleep_mode", False):
-            logger.info("[Nova-Omni] 睡眠模式未启用，sexlife联动无法生效")
+            logger.info("[Nova-Splitter] 睡眠模式未启用，sexlife联动无法生效")
             return
         
         # 首次启动时立即读取一次
@@ -886,7 +803,7 @@ class NovaOmniPlugin(Star):
         self._schedule_checker_task = asyncio.create_task(
             self._daily_cron_reader(hour, minute)
         )
-        logger.info(f"[Nova-Omni] sexlife联动已启动，每天 {hour:02d}:{minute:02d} 读取日程")
+        logger.info(f"[Nova-Splitter] sexlife联动已启动，每天 {hour:02d}:{minute:02d} 读取日程")
     
     async def _daily_cron_reader(self, hour: int, minute: int):
         """每天定时读取 sexlife 日程（简易 cron）"""
@@ -899,7 +816,7 @@ class NovaOmniPlugin(Star):
                     target += datetime.timedelta(days=1)
                 
                 wait_seconds = (target - now).total_seconds()
-                logger.info(f"[Nova-Omni] 下次日程读取: {target.strftime('%Y-%m-%d %H:%M')} ({wait_seconds:.0f}s后)")
+                logger.info(f"[Nova-Splitter] 下次日程读取: {target.strftime('%Y-%m-%d %H:%M')} ({wait_seconds:.0f}s后)")
                 
                 await asyncio.sleep(wait_seconds)
                 
@@ -907,12 +824,12 @@ class NovaOmniPlugin(Star):
                 self._read_sexlife_schedule()
                 # 读取日程后清除手动覆盖，让自动判断生效
                 self._manual_sleep_override = None
-                logger.info("[Nova-Omni] 每日定时日程读取完成，已切换到自动模式")
+                logger.info("[Nova-Splitter] 每日定时日程读取完成，已切换到自动模式")
                 
                 # 等1秒避免重复触发
                 await asyncio.sleep(1)
         except asyncio.CancelledError:
-            logger.info("[Nova-Omni] sexlife联动定时器已停止")
+            logger.info("[Nova-Splitter] sexlife联动定时器已停止")
     
     def _read_sexlife_schedule(self):
         """读取 sexlife 的 schedule_data.json，提取今天的睡觉时段"""
@@ -920,14 +837,14 @@ class NovaOmniPlugin(Star):
         sexlife_data_path = Path("data/plugin_data/astrbot_plugin_sexlife/schedule_data.json")
         
         if not sexlife_data_path.exists():
-            logger.debug("[Nova-Omni] sexlife日程文件不存在")
+            logger.debug("[Nova-Splitter] sexlife日程文件不存在")
             self._sleep_periods = []
             return
         
         try:
             raw = json.loads(sexlife_data_path.read_text(encoding="utf-8"))
         except Exception as e:
-            logger.error(f"[Nova-Omni] 读取sexlife日程失败: {e}")
+            logger.error(f"[Nova-Splitter] 读取sexlife日程失败: {e}")
             self._sleep_periods = []
             return
         
@@ -936,7 +853,7 @@ class NovaOmniPlugin(Star):
         today_data = raw.get(today_str)
         
         if not today_data or not isinstance(today_data, dict):
-            logger.debug(f"[Nova-Omni] sexlife无今日({today_str})日程数据")
+            logger.debug(f"[Nova-Splitter] sexlife无今日({today_str})日程数据")
             self._sleep_periods = []
             return
         
@@ -963,14 +880,14 @@ class NovaOmniPlugin(Star):
                     start_minutes = start_h * 60 + start_m
                     end_minutes = end_h * 60 + end_m
                     sleep_periods.append((start_minutes, end_minutes))
-                    logger.debug(f"[Nova-Omni] 识别到睡觉时段: {entry['time_start']}-{entry['time_end']} ({title})")
+                    logger.debug(f"[Nova-Splitter] 识别到睡觉时段: {entry['time_start']}-{entry['time_end']} ({title})")
                 except (ValueError, KeyError) as e:
-                    logger.warning(f"[Nova-Omni] 解析时段失败: {e}")
+                    logger.warning(f"[Nova-Splitter] 解析时段失败: {e}")
         
         self._sleep_periods = sleep_periods
         if sleep_periods:
             periods_str = ", ".join([f"{p[0]//60}:{p[0]%60:02d}-{p[1]//60}:{p[1]%60:02d}" for p in sleep_periods])
-            logger.info(f"[Nova-Omni] 今日睡觉时段: {periods_str}")
+            logger.info(f"[Nova-Splitter] 今日睡觉时段: {periods_str}")
     
     def _is_in_sleep_period(self, current_minutes: int) -> bool:
         """判断当前时间（分钟数）是否在任一睡觉时段内
@@ -992,7 +909,7 @@ class NovaOmniPlugin(Star):
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_read_schedule(self, event: AstrMessageEvent):
         """手动读取sexlife日程并更新睡眠状态（管理员专用）"""
-        setattr(event, "__nova_omni_own_cmd", True)
+        setattr(event, "__nova_splitter_own_cmd", True)
         
         self._read_sexlife_schedule()
         
@@ -1022,7 +939,7 @@ class NovaOmniPlugin(Star):
     @filter.on_decorating_result(priority=-100000000000000000)
     async def on_decorating_result(self, event: AstrMessageEvent):
         """处理消息分段 + 完全静默拦截 + 思维链兜底清理"""
-        logger.info(f"[Nova-Omni] on_decorating_result 触发")
+        logger.info(f"[Nova-Splitter] on_decorating_result 触发")
         
         # 兜底清理：无论是否 LLM 回复，都检查并移除思维链标签
         # 防止工具调用中间结果泄露思维链
@@ -1041,7 +958,7 @@ class NovaOmniPlugin(Star):
                     )
                     if not has_non_text:
                         result.chain.clear()
-                        logger.info("[Nova-Omni] 兜底清理后文本为空，阻止发送")
+                        logger.info("[Nova-Splitter] 兜底清理后文本为空，阻止发送")
                         return
         
         # 完全静默检查：睡眠模式 + sleep_full_silence 开启时
@@ -1049,11 +966,11 @@ class NovaOmniPlugin(Star):
         if (self._get_actual_sleep_state()
             and self.config.get("enable_sleep_mode", False)
             and self.config.get("sleep_full_silence", False)
-            and not getattr(event, "__nova_omni_own_cmd", False)):
+            and not getattr(event, "__nova_splitter_own_cmd", False)):
             
             # 白名单放行检查
             if not self._check_sleep_whitelist(event):
-                logger.info("[Nova-Omni] 完全静默模式：拦截消息发送")
+                logger.info("[Nova-Splitter] 完全静默模式：拦截消息发送")
                 result = event.get_result()
                 if result and result.chain:
                     result.chain.clear()
@@ -1062,27 +979,27 @@ class NovaOmniPlugin(Star):
         try:
             await self._do_split(event)
         except Exception as e:
-            logger.error(f"[Nova-Omni] on_decorating_result 发生未预期异常: {type(e).__name__}: {e}")
-            logger.error(f"[Nova-Omni] 异常详情:\n{traceback.format_exc()}")
+            logger.error(f"[Nova-Splitter] on_decorating_result 发生未预期异常: {type(e).__name__}: {e}")
+            logger.error(f"[Nova-Splitter] 异常详情:\n{traceback.format_exc()}")
     
     async def _do_split(self, event: AstrMessageEvent):
         """实际的分段处理逻辑"""
-        if getattr(event, "__nova_omni_processed", False):
-            logger.info(f"[Nova-Omni] 已处理过，跳过")
+        if getattr(event, "__nova_splitter_processed", False):
+            logger.info(f"[Nova-Splitter] 已处理过，跳过")
             return
         
         result = event.get_result()
         if not result or not result.chain:
-            logger.info(f"[Nova-Omni] 无结果或chain为空")
+            logger.info(f"[Nova-Splitter] 无结果或chain为空")
             return
         
         split_scope = self.config.get("split_scope", "llm_only")
         is_llm_reply = getattr(event, "__is_llm_reply", False)
         
-        logger.info(f"[Nova-Omni] split_scope={split_scope}, is_llm_reply={is_llm_reply}")
+        logger.info(f"[Nova-Splitter] split_scope={split_scope}, is_llm_reply={is_llm_reply}")
         
         if split_scope == "llm_only" and not is_llm_reply:
-            logger.info(f"[Nova-Omni] 非LLM回复，跳过")
+            logger.info(f"[Nova-Splitter] 非LLM回复，跳过")
             return
         
         full_text = ""
@@ -1100,7 +1017,7 @@ class NovaOmniPlugin(Star):
                         full_text += before
                     at_qq = m.group(1)
                     comp_positions.append((len(full_text), At(qq=at_qq)))
-                    logger.info(f"[Nova-Omni] 解析到文本中的at标记: [at:{at_qq}] 偏移量={len(full_text)}")
+                    logger.info(f"[Nova-Splitter] 解析到文本中的at标记: [at:{at_qq}] 偏移量={len(full_text)}")
                     last_end = m.end()
                 remaining = text[last_end:]
                 if remaining:
@@ -1110,22 +1027,22 @@ class NovaOmniPlugin(Star):
                 chain_debug.append(f"{type(comp).__name__}")
                 if not isinstance(comp, Reply):
                     comp_positions.append((len(full_text), comp))
-        logger.info(f"[Nova-Omni] 原始chain结构: {' | '.join(chain_debug)}")
+        logger.info(f"[Nova-Splitter] 原始chain结构: {' | '.join(chain_debug)}")
         
         if not full_text.strip():
-            logger.info(f"[Nova-Omni] 文本为空，跳过")
+            logger.info(f"[Nova-Splitter] 文本为空，跳过")
             return
         
         min_length = self.config.get("max_length_no_split", 50)
-        logger.info(f"[Nova-Omni] 文本长度={len(full_text)}, 阈值={min_length}")
+        logger.info(f"[Nova-Splitter] 文本长度={len(full_text)}, 阈值={min_length}")
         if len(full_text) < min_length:
-            logger.info(f"[Nova-Omni] 文本过短，跳过")
+            logger.info(f"[Nova-Splitter] 文本过短，跳过")
             return
         
-        setattr(event, "__nova_omni_processed", True)
+        setattr(event, "__nova_splitter_processed", True)
         
         split_mode = self.config.get("split_mode", "char_count")
-        logger.info(f"[Nova-Omni] 开始处理，模式={split_mode}, 文本长度={len(full_text)}")
+        logger.info(f"[Nova-Splitter] 开始处理，模式={split_mode}, 文本长度={len(full_text)}")
         
         try:
             if split_mode == "llm_assist" and self.config.get("enable_llm_assist", False):
@@ -1146,24 +1063,24 @@ class NovaOmniPlugin(Star):
                 splitter = CharCountSplitter(dict(self.config))
                 split_result = splitter.split(full_text)
         except Exception as split_err:
-            logger.error(f"[Nova-Omni] 分段策略执行失败: {type(split_err).__name__}: {split_err}")
-            logger.error(f"[Nova-Omni] 分段异常详情:\n{traceback.format_exc()}")
+            logger.error(f"[Nova-Splitter] 分段策略执行失败: {type(split_err).__name__}: {split_err}")
+            logger.error(f"[Nova-Splitter] 分段异常详情:\n{traceback.format_exc()}")
             return
         
         segments = split_result.segments
         
         if len(segments) <= 1:
-            logger.info(f"[Nova-Omni] 分段结果只有1段，跳过")
+            logger.info(f"[Nova-Splitter] 分段结果只有1段，跳过")
             return
         
         segments = self.punctuation_processor.process(segments, split_result.split_points)
         segments = [s for s in segments if s.strip()]
         
         if len(segments) <= 1:
-            logger.info(f"[Nova-Omni] 标点处理后只剩1段，跳过")
+            logger.info(f"[Nova-Splitter] 标点处理后只剩1段，跳过")
             return
         
-        logger.info(f"[Nova-Omni] 消息被分为 {len(segments)} 段")
+        logger.info(f"[Nova-Splitter] 消息被分为 {len(segments)} 段")
         
         reply_components = [c for c in result.chain if isinstance(c, Reply)]
         
@@ -1177,8 +1094,8 @@ class NovaOmniPlugin(Star):
             seg_ranges.append((seg_start, seg_end))
             offset = seg_end
         
-        logger.info(f"[Nova-Omni] 分段范围: {seg_ranges}")
-        logger.info(f"[Nova-Omni] 非文本组件位置: {[(pos, type(c).__name__) for pos, c in comp_positions]}")
+        logger.info(f"[Nova-Splitter] 分段范围: {seg_ranges}")
+        logger.info(f"[Nova-Splitter] 非文本组件位置: {[(pos, type(c).__name__) for pos, c in comp_positions]}")
         
         message_segments = []
         for i, seg_text in enumerate(segments):
@@ -1204,6 +1121,10 @@ class NovaOmniPlugin(Star):
                 seg_chain.append(Plain(""))
             
             message_segments.append(seg_chain)
+            
+        if self.config.get("enable_reply", True) and reply_components:
+            for reply_comp in reversed(reply_components):
+                message_segments[0].insert(0, reply_comp)
         
         failed_texts = []
         for i in range(len(message_segments) - 1):
@@ -1223,7 +1144,7 @@ class NovaOmniPlugin(Star):
                 delay = self._calculate_delay(seg_text)
                 await asyncio.sleep(delay)
             except Exception as e:
-                logger.error(f"[Nova-Omni] 发送分段 {i+1} 失败: {e}")
+                logger.error(f"[Nova-Splitter] 发送分段 {i+1} 失败: {e}")
                 failed_texts.append(seg_text)
         
         last_chain = message_segments[-1]
@@ -1232,10 +1153,7 @@ class NovaOmniPlugin(Star):
             last_text = "".join([c.text for c in last_chain if isinstance(c, Plain)])
             combined_text = "\n".join(failed_texts) + "\n" + last_text
             last_chain = [Plain(combined_text)]
-            logger.info(f"[Nova-Omni] 有 {len(failed_texts)} 段发送失败，已合并到最后一段")
-        
-        for reply_comp in reply_components:
-            last_chain.insert(0, reply_comp)
+            logger.info(f"[Nova-Splitter] 有 {len(failed_texts)} 段发送失败，已合并到最后一段")
         
         self._log_segment(len(message_segments), len(message_segments), last_chain, "交给框架")
         
@@ -1251,7 +1169,7 @@ class NovaOmniPlugin(Star):
                 content += f"[{type(comp).__name__}]"
         
         content = content.replace('\n', '\\n')[:100]
-        logger.info(f"[Nova-Omni] 第 {index}/{total} 段 ({method}): {content}...")
+        logger.info(f"[Nova-Splitter] 第 {index}/{total} 段 ({method}): {content}...")
     
     def _calculate_delay(self, text: str) -> float:
         strategy = self.config.get("delay_strategy", "linear")

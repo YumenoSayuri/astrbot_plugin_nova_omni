@@ -1,6 +1,6 @@
 name: astrbot_plugin_nova_omni
 display_name: Nova全能引擎
-desc: 空回重试兜底 + 智能消息分段 + 引导思考 + 睡眠联动 - 分段/思维链/沉默/休眠/sexlife联动/空回拦截
-version: v1.4.0
+desc: 智能消息分段 + 引导思考 + 睡眠联动 - 分段/思维链/沉默/休眠/sexlife联动/思维转发
+version: v1.3.2
 author: 辉宝
 repo: https://github.com/YumenoSayuri/astrbot_plugin_nova_omni
