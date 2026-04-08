@@ -21,7 +21,7 @@ import asyncio
 import uuid
 import datetime
 import traceback
-from datetime import datetime, date
+import datetime
 import zoneinfo
 from abc import ABC, abstractmethod
 from typing import List, Dict, Optional, Tuple
@@ -533,8 +533,8 @@ class NovaSplitterPlugin(Star):
         """拦截LLM响应：提取思维链、检测沉默、标记LLM回复"""
         setattr(event, "__is_llm_reply", True)
         
-        if not self.config.get("enable_thought_guide", False):
-            logger.info(f"[Nova-Splitter] 检测到LLM响应，已标记事件")
+        if not self.config.get("enable_thought_intercept", True):
+            logger.info(f"[Nova-Splitter] 思维链拦截未开启，跳过处理")
             return
         
         # 获取回复文本
@@ -943,7 +943,7 @@ class NovaSplitterPlugin(Star):
         
         # 兜底清理：无论是否 LLM 回复，都检查并移除思维链标签
         # 防止工具调用中间结果泄露思维链
-        if self.config.get("enable_thought_guide", False):
+        if self.config.get("enable_thought_intercept", True):
             result = event.get_result()
             if result and result.chain:
                 self._strip_thought_from_chain(result.chain, event)

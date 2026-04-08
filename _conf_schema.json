@@ -157,7 +157,13 @@
     "type": "bool",
     "default": false,
     "description": "启用引导思考",
-    "hint": "开启后会在system prompt末尾追加引导指令，让模型先输出内心思考再回复。思考内容会被插件拦截，不会发送给用户"
+    "hint": "开启后会在用户消息前追加引导指令，让模型先输出内心思考再回复。"
+  },
+  "enable_thought_intercept": {
+    "type": "bool",
+    "default": true,
+    "description": "拦截思维链标签",
+    "hint": "开启后会自动拦截并隐藏回复中的 <thought> 标签内容。即使不开启引导思考，也可以单独开启此项来拦截模型自发的思考。"
   },
   "thought_guide_prompt": {
     "type": "string",
