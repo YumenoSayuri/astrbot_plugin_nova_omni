@@ -639,10 +639,9 @@ class NovaSplitterPlugin(Star):
         thought = self.thought_cache.get(session_id, "")
         
         if thought:
-            tag = self.config.get("thought_tag", "thought")
-            # 用一种AI能理解的格式输出，让她看到后产生"想法被翻出来了"的羞耻感
+            # 辉宝主人要求：直接输出思维内容，不带 <thought> 标签，避免被兜底拦截机制误伤
             yield event.plain_result(
-                f"刚才心里想的是：\n<{tag}>{thought}</{tag}>"
+                f"刚才心里想的是：\n{thought}"
             )
         else:
             yield event.plain_result("最近没有在想什么哦")
