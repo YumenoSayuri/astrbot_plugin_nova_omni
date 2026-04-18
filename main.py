@@ -1067,19 +1067,28 @@ class NovaSplitterPlugin(Star):
             return
         
         segments = split_result.segments
+        process_single = self.config.get("process_single_segment", True)
         
-        if len(segments) <= 1:
-            logger.info(f"[Nova-Splitter] 分段结果只有1段，跳过")
+        if not segments:
+            logger.info(f"[Nova-Splitter] 分段结果为空，跳过")
+            return
+            
+        if len(segments) == 1 and not process_single:
+            logger.info(f"[Nova-Splitter] 分段结果只有1段且配置为不接管，跳过")
             return
         
         segments = self.punctuation_processor.process(segments, split_result.split_points)
         segments = [s for s in segments if s.strip()]
         
-        if len(segments) <= 1:
-            logger.info(f"[Nova-Splitter] 标点处理后只剩1段，跳过")
+        if not segments:
+            logger.info(f"[Nova-Splitter] 标点处理后为空，跳过")
+            return
+            
+        if len(segments) == 1 and not process_single:
+            logger.info(f"[Nova-Splitter] 标点处理后只剩1段且配置为不接管，跳过")
             return
         
-        logger.info(f"[Nova-Splitter] 消息被分为 {len(segments)} 段")
+        logger.info(f"[Nova-Splitter] 消息被分为 {len(segments)} 段 (单段接管状态: {process_single})")
         
         reply_components = [c for c in result.chain if isinstance(c, Reply)]
         

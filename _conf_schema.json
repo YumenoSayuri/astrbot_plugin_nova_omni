@@ -1,4 +1,10 @@
 {
+  "process_single_segment": {
+    "type": "bool",
+    "default": true,
+    "description": "接管单段消息(处理LLM修改)",
+    "hint": "开启后，即使LLM分段后只返回了一段（比如删减了重复废话），或者只是为了将回复引用提前，系统也会强制用处理后的结果替换原消息。关闭则单段消息会直接退回原未处理消息。"
+  },
   "split_mode": {
     "type": "string",
     "options": ["char_count", "punctuation", "llm_assist", "hybrid"],
