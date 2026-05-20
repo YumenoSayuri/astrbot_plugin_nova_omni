@@ -595,28 +595,33 @@ class NovaSplitterPlugin(Star):
         silence_keywords_str = self.config.get("silence_keywords", "沉默,静默,不想回复,不回复,不想搭理,没必要回复")
         silence_keywords = [kw.strip() for kw in silence_keywords_str.split(",") if kw.strip()]
         
-        # 检查回复内容是否触发沉默（用 [沉默] 或包含沉默关键词）
+        # 检查回复内容是否触发沉默
+        # 规则升级：只要全文任意位置出现 [沉默]/[不想回复] 这类方括号沉默标记，就直接拦截
         reply_stripped = reply_content.strip()
         should_silence = False
+        silence_reason = ""
         
-        # 检查 [xxx] 格式的沉默标记
-        bracket_match = re.match(r'^\[(.+?)\]$', reply_stripped)
-        if bracket_match:
-            bracket_content = bracket_match.group(1)
+        bracket_matches = re.findall(r'\[(.+?)\]', reply_stripped)
+        for bracket_content in bracket_matches:
+            bracket_content = bracket_content.strip()
             for kw in silence_keywords:
                 if kw in bracket_content:
                     should_silence = True
+                    silence_reason = f"命中方括号沉默标记: [{bracket_content}]"
                     break
+            if should_silence:
+                break
         
-        # 也检查纯文本是否就是沉默关键词
+        # 再检查整段文本是否就是沉默关键词
         if not should_silence and reply_stripped:
             for kw in silence_keywords:
                 if reply_stripped == kw or reply_stripped == f"[{kw}]":
                     should_silence = True
+                    silence_reason = f"全文严格命中沉默关键词: {reply_stripped}"
                     break
         
         if should_silence:
-            logger.info(f"[Nova-Splitter] AI决定沉默，拦截回复: {reply_stripped}")
+            logger.info(f"[Nova-Splitter] AI决定沉默，拦截回复: {reply_stripped} ({silence_reason})")
             event.stop_event()
             return
         
