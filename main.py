@@ -1,5 +1,5 @@
 """
-Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.3.1
+Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.3.7
 作者: Nova for 辉宝主人
 功能:
   1. 按字数均分分段（强制标点边界，绝不在词语中间断开）
@@ -296,83 +296,112 @@ class LLMAssistSplitter(SplitStrategy):
         self.live_config = live_config
     
     async def split_async(self, text: str) -> SplitResult:
-        """异步分段（需要调用LLM），带超时保护，支持system_prompt"""
+        """异步分段（需要调用LLM），带超时保护，支持system_prompt，支持重试和兜底"""
         target_segments = self.config.get("target_segments", 3)
         
         if self.live_config:
             provider_id = self.live_config.get("llm_assist_provider_id", "")
+            retry_count = self.live_config.get("llm_retry_count", 2)
+            fallback_provider_id = self.live_config.get("llm_fallback_provider_id", "")
         else:
             provider_id = self.config.get("llm_assist_provider_id", "")
+            retry_count = self.config.get("llm_retry_count", 2)
+            fallback_provider_id = self.config.get("llm_fallback_provider_id", "")
         
         system_prompt = self.config.get("llm_split_system_prompt", "")
-        user_template = self.config.get("llm_split_prompt", "\u539f\u6587\uff1a\n{text}")
+        user_template = self.config.get("llm_split_prompt", "原文：\n{text}")
         llm_timeout = float(self.config.get("llm_timeout", 30.0))
         
-        logger.info(f"[Nova-Splitter] \u8bfb\u53d6\u5230\u7684provider_id: '{provider_id}'")
+        logger.info(f"[Nova-Splitter] 读取到的provider_id: '{provider_id}', 重试次数: {retry_count}, 兜底模型: '{fallback_provider_id}'")
         
-        provider = None
+        # 获取主 Provider
+        main_provider = None
         if provider_id:
-            provider = self.context.get_provider_by_id(provider_id)
-            if not provider:
-                logger.warning(f"[Nova-Splitter] \u672a\u627e\u5230\u6307\u5b9aProvider: {provider_id}")
+            main_provider = self.context.get_provider_by_id(provider_id)
+            if not main_provider:
+                logger.warning(f"[Nova-Splitter] 未找到指定的主Provider: {provider_id}")
         
-        if not provider:
-            logger.info(f"[Nova-Splitter] \u4f7f\u7528\u4f1a\u8bdd\u9ed8\u8ba4Provider, origin={self.event_origin}")
-            provider = self.context.get_using_provider(self.event_origin)
-        
-        if not provider or not isinstance(provider, Provider):
-            logger.warning("[Nova-Splitter] \u672a\u627e\u5230LLM Provider\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
+        if not main_provider:
+            logger.info(f"[Nova-Splitter] 使用会话默认Provider作为主模型, origin={self.event_origin}")
+            main_provider = self.context.get_using_provider(self.event_origin)
+            
+        # 获取兜底 Provider
+        fallback_provider = None
+        if fallback_provider_id:
+            fallback_provider = self.context.get_provider_by_id(fallback_provider_id)
+            if not fallback_provider:
+                logger.warning(f"[Nova-Splitter] 未找到指定的兜底Provider: {fallback_provider_id}")
+                
+        providers_to_try = []
+        if main_provider and isinstance(main_provider, Provider):
+            providers_to_try.append(("主模型", main_provider))
+        if fallback_provider and isinstance(fallback_provider, Provider):
+            providers_to_try.append(("兜底模型", fallback_provider))
+            
+        if not providers_to_try:
+            logger.warning("[Nova-Splitter] 未找到任何可用的LLM Provider，回退到按字数分段")
             fallback = CharCountSplitter(self.config)
             return fallback.split(text)
-        
+            
         user_prompt = user_template.format(n=target_segments, text=text)
         
-        try:
-            logger.info(f"[Nova-Splitter] \u5f00\u59cb\u8c03\u7528LLM\u5206\u6bb5 (provider: {provider_id or 'default'}, timeout: {llm_timeout}s)")
-            
-            call_kwargs = {
-                "prompt": user_prompt,
-                "session_id": uuid.uuid4().hex,
-            }
-            if system_prompt:
-                call_kwargs["system_prompt"] = system_prompt
-            
-            response = await asyncio.wait_for(
-                provider.text_chat(**call_kwargs),
-                timeout=llm_timeout
-            )
-            
-            completion_text = None
-            if response:
+        for role, provider in providers_to_try:
+            p_name = getattr(provider, 'id', getattr(provider, 'name', type(provider).__name__))
+            for attempt in range(retry_count + 1):
                 try:
-                    completion_text = response.completion_text
-                except Exception as ct_err:
-                    logger.error(f"[Nova-Splitter] \u83b7\u53d6completion_text\u5931\u8d25: {ct_err}")
+                    logger.info(f"[Nova-Splitter] 开始调用LLM分段 ({role}: {p_name}, 尝试: {attempt + 1}/{retry_count + 1}, timeout: {llm_timeout}s)")
+                    
+                    call_kwargs = {
+                        "prompt": user_prompt,
+                        "session_id": uuid.uuid4().hex,
+                    }
+                    if system_prompt:
+                        call_kwargs["system_prompt"] = system_prompt
+                    
+                    response = await asyncio.wait_for(
+                        provider.text_chat(**call_kwargs),
+                        timeout=llm_timeout
+                    )
+                    
+                    completion_text = None
+                    if response:
+                        try:
+                            completion_text = response.completion_text
+                        except Exception as ct_err:
+                            logger.error(f"[Nova-Splitter] 获取completion_text失败: {ct_err}")
+                    
+                    if not completion_text:
+                        logger.warning(f"[Nova-Splitter] LLM返回空内容")
+                        continue # 触发重试
+                    
+                    result_text = completion_text.strip()
+                    logger.info(f"[Nova-Splitter] LLM返回内容: {result_text[:100]}...")
+                    
+                    json_match = re.search(r'\[.*\]', result_text, re.DOTALL)
+                    if json_match:
+                        import json
+                        segments = json.loads(json_match.group())
+                        if isinstance(segments, list) and len(segments) > 0 and all(isinstance(s, str) for s in segments):
+                            logger.info(f"[Nova-Splitter] LLM分段成功: {len(segments)} 段")
+                            return SplitResult(segments=segments, split_points=[])
+                    
+                    logger.warning(f"[Nova-Splitter] LLM返回格式异常，未找到有效JSON数组")
+                    # 触发重试
+                    
+                except asyncio.TimeoutError:
+                    logger.error(f"[Nova-Splitter] LLM分段超时({llm_timeout}s)")
+                except Exception as e:
+                    logger.error(f"[Nova-Splitter] LLM分段失败: {type(e).__name__}: {e}")
+                    logger.debug(f"[Nova-Splitter] LLM分段异常详情:\n{traceback.format_exc()}")
+                    
+                # 如果到了这里，说明失败了，准备下一次重试
+                if attempt < retry_count:
+                    logger.info(f"[Nova-Splitter] 准备进行第 {attempt + 2} 次重试...")
+                    await asyncio.sleep(1) # 稍微等一下再重试
+                    
+            logger.warning(f"[Nova-Splitter] {role} ({p_name}) 的 {retry_count + 1} 次尝试均已失败。")
             
-            if not completion_text:
-                logger.warning(f"[Nova-Splitter] LLM\u8fd4\u56de\u7a7a\u5185\u5bb9\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
-                fallback = CharCountSplitter(self.config)
-                return fallback.split(text)
-            
-            result_text = completion_text.strip()
-            logger.info(f"[Nova-Splitter] LLM\u8fd4\u56de\u5185\u5bb9: {result_text[:100]}...")
-            
-            json_match = re.search(r'\[.*\]', result_text, re.DOTALL)
-            if json_match:
-                import json
-                segments = json.loads(json_match.group())
-                if isinstance(segments, list) and len(segments) > 0 and all(isinstance(s, str) for s in segments):
-                    logger.info(f"[Nova-Splitter] LLM\u5206\u6bb5\u6210\u529f: {len(segments)} \u6bb5")
-                    return SplitResult(segments=segments, split_points=[])
-            
-            logger.warning(f"[Nova-Splitter] LLM\u8fd4\u56de\u683c\u5f0f\u5f02\u5e38\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
-            
-        except asyncio.TimeoutError:
-            logger.error(f"[Nova-Splitter] LLM\u5206\u6bb5\u8d85\u65f6({llm_timeout}s)\uff0c\u56de\u9000\u5230\u6309\u5b57\u6570\u5206\u6bb5")
-        except Exception as e:
-            logger.error(f"[Nova-Splitter] LLM\u5206\u6bb5\u5931\u8d25: {type(e).__name__}: {e}")
-            logger.debug(f"[Nova-Splitter] LLM\u5206\u6bb5\u5f02\u5e38\u8be6\u60c5:\n{traceback.format_exc()}")
-        
+        logger.error("[Nova-Splitter] 所有模型及重试均已耗尽，回退到按字数分段")
         fallback = CharCountSplitter(self.config)
         return fallback.split(text)
     
@@ -435,9 +464,9 @@ class PunctuationProcessor:
             logger.error(f"[Nova-Splitter] \u81ea\u5b9a\u4e49\u6b63\u5219\u9519\u8bef: {e}")
             return text
 
-@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠联动", "1.3.1")
+@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠联动", "1.3.7")
 class NovaSplitterPlugin(Star):
-    """Nova智能分段插件 v1.3.1"""
+    """Nova智能分段插件 v1.3.7"""
     
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -455,7 +484,7 @@ class NovaSplitterPlugin(Star):
         # 手动睡眠覆盖：True=手动睡觉, False=手动起床, None=自动（由日程决定）
         self._manual_sleep_override: Optional[bool] = None
         
-        logger.info("[Nova-Splitter] 插件已初始化 v1.3.1")
+        logger.info("[Nova-Splitter] 插件已初始化 v1.3.7")
         logger.info(f"[Nova-Splitter] 分段模式: {config.get('split_mode', 'char_count')}")
         logger.info(f"[Nova-Splitter] 引导思考: {'启用' if config.get('enable_thought_guide', False) else '关闭'}")
         logger.info(f"[Nova-Splitter] 睡眠模式: {'启用' if config.get('enable_sleep_mode', False) else '关闭'}")

@@ -93,6 +93,19 @@
     "hint": "留空则使用当前正在使用的LLM提供商。LLM辅助分段任务较简单，建议选择稳定的模型",
     "_special": "select_provider"
   },
+  "llm_retry_count": {
+    "type": "int",
+    "default": 2,
+    "description": "LLM分段重试次数",
+    "hint": "当LLM分段失败或超时时，自动重试的次数。设为0则不重试"
+  },
+  "llm_fallback_provider_id": {
+    "type": "string",
+    "default": "",
+    "description": "LLM分段兜底提供商",
+    "hint": "当主模型重试耗尽仍失败时，使用的兜底模型。留空则直接回退到字数分段",
+    "_special": "select_provider"
+  },
   "llm_split_system_prompt": {
     "type": "string",
     "default": "",
