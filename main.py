@@ -1,5 +1,5 @@
 """
-Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.3.7
+Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.3.8
 作者: Nova for 辉宝主人
 功能:
   1. 按字数均分分段（强制标点边界，绝不在词语中间断开）
@@ -40,6 +40,69 @@ class SplitResult:
     """分段结果"""
     segments: List[str]
     split_points: List[int]
+
+
+@dataclass
+class ThoughtParseResult:
+    """思维标签解析结果"""
+    thought_content: str
+    reply_content: str
+    found_thought: bool
+
+
+class ThoughtTagParser:
+    """以最后闭标签为可信边界的防泄漏解析器"""
+
+    def __init__(self, tag: str):
+        self.tag = tag or "thought"
+        tag_e = re.escape(self.tag)
+        self.close_pattern = re.compile(
+            rf'<\s*/\s*{tag_e}\s*>|/\s*{tag_e}\s*>',
+            re.IGNORECASE
+        )
+        self.open_pattern = re.compile(
+            rf'<\s*{tag_e}\s*>|(?<![/\w]){tag_e}\s*>',
+            re.IGNORECASE
+        )
+        self.any_tag_pattern = re.compile(
+            rf'<\s*/?\s*{tag_e}\s*>|/\s*{tag_e}\s*>'
+            rf'|(?<![/\w]){tag_e}\s*>',
+            re.IGNORECASE
+        )
+
+    def _clean_tags(self, text: str) -> str:
+        return self.any_tag_pattern.sub("", text).strip()
+
+    def parse(self, text: str) -> ThoughtParseResult:
+        if not text:
+            return ThoughtParseResult("", text, False)
+
+        close_matches = list(self.close_pattern.finditer(text))
+        if close_matches:
+            last_close = close_matches[-1]
+            tail = text[last_close.end():].strip()
+
+            if tail:
+                thought_source = text[:last_close.start()]
+                reply_content = tail
+            elif len(close_matches) >= 2:
+                previous_close = close_matches[-2]
+                thought_source = text[:previous_close.start()]
+                reply_content = text[previous_close.end():last_close.start()].strip()
+            else:
+                thought_source = text[:last_close.start()]
+                reply_content = ""
+
+            return ThoughtParseResult(
+                self._clean_tags(thought_source),
+                self._clean_tags(reply_content),
+                True
+            )
+
+        if self.open_pattern.search(text):
+            return ThoughtParseResult(self._clean_tags(text), "", True)
+
+        return ThoughtParseResult("", text, False)
 
 
 class SplitStrategy(ABC):
@@ -464,9 +527,9 @@ class PunctuationProcessor:
             logger.error(f"[Nova-Splitter] \u81ea\u5b9a\u4e49\u6b63\u5219\u9519\u8bef: {e}")
             return text
 
-@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠联动", "1.3.7")
+@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠联动", "1.3.8")
 class NovaSplitterPlugin(Star):
-    """Nova智能分段插件 v1.3.7"""
+    """Nova智能分段插件 v1.3.8"""
     
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
@@ -484,7 +547,7 @@ class NovaSplitterPlugin(Star):
         # 手动睡眠覆盖：True=手动睡觉, False=手动起床, None=自动（由日程决定）
         self._manual_sleep_override: Optional[bool] = None
         
-        logger.info("[Nova-Splitter] 插件已初始化 v1.3.7")
+        logger.info("[Nova-Splitter] 插件已初始化 v1.3.8")
         logger.info(f"[Nova-Splitter] 分段模式: {config.get('split_mode', 'char_count')}")
         logger.info(f"[Nova-Splitter] 引导思考: {'启用' if config.get('enable_thought_guide', False) else '关闭'}")
         logger.info(f"[Nova-Splitter] 睡眠模式: {'启用' if config.get('enable_sleep_mode', False) else '关闭'}")
@@ -571,34 +634,10 @@ class NovaSplitterPlugin(Star):
         if not completion_text:
             return
         
-        # 提取思维链内容（多重兼容）
-        tag = self.config.get("thought_tag", "thought")
-        tag_e = re.escape(tag)
-        
-        thought_content = ""
-        reply_content = completion_text
-        found_thought = False
-        
-        # 策略1：标准匹配 <thought>...</thought> 或 thought>...</thought>
-        thought_pattern = re.compile(
-            rf'<?{tag_e}>(.*?)</{tag_e}>',
-            re.DOTALL
-        )
-        thought_match = thought_pattern.search(completion_text)
-        
-        if thought_match:
-            thought_content = thought_match.group(1).strip()
-            reply_content = thought_pattern.sub('', completion_text).strip()
-            found_thought = True
-        else:
-            # 策略2：只有闭合标签 </thought>，把它之前的内容当思维链
-            close_tag = f"</{tag}>"
-            close_pos = completion_text.find(close_tag)
-            if close_pos > 0:
-                thought_content = completion_text[:close_pos].strip()
-                reply_content = completion_text[close_pos + len(close_tag):].strip()
-                found_thought = True
-                logger.info(f"[Nova-Splitter] 兼容模式：以 </{tag}> 为分隔点提取思维链")
+        parse_result = self._parse_thought_text(completion_text)
+        thought_content = parse_result.thought_content
+        reply_content = parse_result.reply_content
+        found_thought = parse_result.found_thought
         
         if found_thought:
             session_id = event.get_session_id()
@@ -653,7 +692,7 @@ class NovaSplitterPlugin(Star):
             logger.info(f"[Nova-Splitter] AI决定沉默，拦截回复: {reply_stripped} ({silence_reason})")
             event.stop_event()
             return
-        
+
         # 将清理后的回复写回（只要找到了思维链就写回，不管是哪种策略）
         if found_thought:
             resp.completion_text = reply_content
@@ -748,49 +787,41 @@ class NovaSplitterPlugin(Star):
         except Exception as e:
             logger.error(f"[Nova-Splitter] 思维链转发失败: {e}")
     
-    def _strip_thought_from_chain(self, chain: List[BaseMessageComponent], event: AstrMessageEvent = None):
-        """从消息链中移除 <thought> 标签内容（兜底清理），同时提取并转发"""
+    def _parse_thought_text(self, text: str) -> ThoughtParseResult:
         tag = self.config.get("thought_tag", "thought")
-        tag_e = re.escape(tag)
-        # 匹配完整标签或缺少开头<的标签
-        pattern = re.compile(rf'<?{tag_e}>(.*?)</{tag_e}>', re.DOTALL)
-        
-        for i, comp in enumerate(chain):
-            if isinstance(comp, Plain) and comp.text:
-                original = comp.text
-                thought_extracted = ""
-                
-                # 策略1：正则提取+移除
-                match = pattern.search(original)
-                if match:
-                    thought_extracted = match.group(1).strip()
-                    cleaned = pattern.sub('', original)
-                else:
-                    # 策略2：用闭合标签分隔
-                    cleaned = original
-                    close_tag = f"</{tag}>"
-                    close_pos = original.find(close_tag)
-                    if close_pos > 0:
-                        thought_extracted = original[:close_pos].strip()
-                        cleaned = original[close_pos + len(close_tag):]
-                
-                cleaned = cleaned.strip()
-                if cleaned != original.strip():
-                    chain[i] = Plain(cleaned)
-                    logger.info(f"[Nova-Splitter] 兜底清理：从chain中移除了thought标签")
-                    
-                    # 兜底转发：如果提取到思维内容且启用了转发
-                    if thought_extracted and event and self.config.get("thought_forward_enabled", False):
-                        forward_target = self.config.get("thought_forward_target", "").strip()
-                        if forward_target:
-                            asyncio.create_task(
-                                self._forward_thought(event, thought_extracted, forward_target)
-                            )
-                    
-                    # 兜底缓存
-                    if thought_extracted and event:
-                        session_id = event.get_session_id()
-                        self.thought_cache[session_id] = thought_extracted
+        return ThoughtTagParser(tag).parse(text)
+
+    def _strip_thought_from_chain(self, chain: List[BaseMessageComponent], event: AstrMessageEvent = None):
+        """合并全部文本组件后移除思维内容，兼容跨 Plain 标签"""
+        plain_indexes = [
+            i for i, comp in enumerate(chain)
+            if isinstance(comp, Plain) and comp.text
+        ]
+        if not plain_indexes:
+            return False
+
+        original = "".join(chain[i].text for i in plain_indexes)
+        parse_result = self._parse_thought_text(original)
+        if not parse_result.found_thought:
+            return False
+
+        chain[plain_indexes[0]] = Plain(parse_result.reply_content)
+        for i in plain_indexes[1:]:
+            chain[i] = Plain("")
+        logger.info("[Nova-Splitter] 兜底清理：从完整chain中移除了thought标签")
+
+        thought_extracted = parse_result.thought_content
+        if thought_extracted and event and self.config.get("thought_forward_enabled", False):
+            forward_target = self.config.get("thought_forward_target", "").strip()
+            if forward_target:
+                asyncio.create_task(
+                    self._forward_thought(event, thought_extracted, forward_target)
+                )
+
+        if thought_extracted and event:
+            session_id = event.get_session_id()
+            self.thought_cache[session_id] = thought_extracted
+        return True
     
     def _get_actual_sleep_state(self) -> bool:
         """获取实际的睡眠状态
@@ -1101,6 +1132,14 @@ class NovaSplitterPlugin(Star):
             return
         
         segments = split_result.segments
+        if self.config.get("enable_thought_intercept", True) and segments:
+            segment_separator = "\x00NOVA_SEGMENT_BOUNDARY\x00"
+            combined_segments = segment_separator.join(segments)
+            segment_parse = self._parse_thought_text(combined_segments)
+            if segment_parse.found_thought:
+                segments = segment_parse.reply_content.split(segment_separator)
+                logger.warning("[Nova-Splitter] 分段结果中仍含thought标签，已执行二次清理")
+
         process_single = self.config.get("process_single_segment", True)
         
         if not segments:
