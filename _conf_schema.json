@@ -196,6 +196,12 @@
     "description": "思维标签名",
     "hint": "用于包裹思维内容的XML标签名，默认为thought，即<thought>...</thought>"
   },
+  "thought_cache_limit": {
+    "type": "int",
+    "default": 10,
+    "description": "每个会话的思维历史上限",
+    "hint": "每个群聊或私聊会话独立保留最近多少条思维链。至少保留1条，超出后自动删除最旧记录"
+  },
   "thought_forward_enabled": {
     "type": "bool",
     "default": false,

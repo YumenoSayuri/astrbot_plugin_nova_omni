@@ -1,5 +1,5 @@
 """
-Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.3.8
+Nova Splitter - 智能消息分段 + 引导思考 + 睡眠模式 v1.3.9
 作者: Nova for 辉宝主人
 功能:
   1. 按字数均分分段（强制标点边界，绝不在词语中间断开）
@@ -527,17 +527,17 @@ class PunctuationProcessor:
             logger.error(f"[Nova-Splitter] \u81ea\u5b9a\u4e49\u6b63\u5219\u9519\u8bef: {e}")
             return text
 
-@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠联动", "1.3.8")
+@register("nova-splitter", "Nova", "智能消息分段 + 引导思考 + 睡眠联动", "1.3.9")
 class NovaSplitterPlugin(Star):
-    """Nova智能分段插件 v1.3.8"""
+    """Nova智能分段插件 v1.3.9"""
     
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.config = config
         self.punctuation_processor = PunctuationProcessor(dict(config))
         
-        # 思维链缓存: {session_id: thought_content}
-        self.thought_cache: Dict[str, str] = {}
+        # 思维链缓存: {session_id: [oldest, ..., newest]}
+        self.thought_cache: Dict[str, List[str]] = {}
         
         # 睡眠状态: 全局标志
         self.is_sleeping: bool = False
@@ -547,7 +547,7 @@ class NovaSplitterPlugin(Star):
         # 手动睡眠覆盖：True=手动睡觉, False=手动起床, None=自动（由日程决定）
         self._manual_sleep_override: Optional[bool] = None
         
-        logger.info("[Nova-Splitter] 插件已初始化 v1.3.8")
+        logger.info("[Nova-Splitter] 插件已初始化 v1.3.9")
         logger.info(f"[Nova-Splitter] 分段模式: {config.get('split_mode', 'char_count')}")
         logger.info(f"[Nova-Splitter] 引导思考: {'启用' if config.get('enable_thought_guide', False) else '关闭'}")
         logger.info(f"[Nova-Splitter] 睡眠模式: {'启用' if config.get('enable_sleep_mode', False) else '关闭'}")
@@ -640,8 +640,7 @@ class NovaSplitterPlugin(Star):
         found_thought = parse_result.found_thought
         
         if found_thought:
-            session_id = event.get_session_id()
-            self.thought_cache[session_id] = thought_content
+            self._cache_thought(event, thought_content)
             logger.info(f"[Nova-Splitter] 提取思维链: {thought_content[:80]}...")
             logger.info(f"[Nova-Splitter] 实际回复: {reply_content[:80]}...")
             
@@ -653,11 +652,7 @@ class NovaSplitterPlugin(Star):
                         self._forward_thought(event, thought_content, forward_target)
                     )
         else:
-            # 这次回复没有思维链，清空上次的缓存
-            session_id = event.get_session_id()
-            if session_id in self.thought_cache:
-                del self.thought_cache[session_id]
-                logger.info(f"[Nova-Splitter] 本次回复无思维链，已清空缓存")
+            logger.info("[Nova-Splitter] 本次回复无思维链，保留历史缓存")
         
         # 检测沉默关键词
         silence_keywords_str = self.config.get("silence_keywords", "沉默,静默,不想回复,不回复,不想搭理,没必要回复")
@@ -702,22 +697,27 @@ class NovaSplitterPlugin(Star):
     
     @filter.command("想啥呢", alias={"在想啥"})
     @filter.permission_type(filter.PermissionType.ADMIN)
-    async def cmd_what_thinking(self, event: AstrMessageEvent):
-        """查看AI最近一次的思维链内容（管理员专用）
-        
-        输出的内容会进入上下文，AI能看到自己的想法被公开了
-        """
+    async def cmd_what_thinking(self, event: AstrMessageEvent, index: int = 1):
+        """查看当前会话倒数第 index 条思维链内容（管理员专用）"""
         setattr(event, "__nova_splitter_own_cmd", True)
         session_id = event.get_session_id()
-        thought = self.thought_cache.get(session_id, "")
-        
-        if thought:
-            # 辉宝主人要求：直接输出思维内容，不带 <thought> 标签，避免被兜底拦截机制误伤
-            yield event.plain_result(
-                f"刚才心里想的是：\n{thought}"
-            )
-        else:
+        history = self.thought_cache.get(session_id, [])
+
+        if index < 1:
+            yield event.plain_result("序号必须是大于等于 1 的整数")
+            return
+        if not history:
             yield event.plain_result("最近没有在想什么哦")
+            return
+        if index > len(history):
+            yield event.plain_result(
+                f"当前会话只有 {len(history)} 条思维记录，没有倒数第 {index} 条"
+            )
+            return
+
+        thought = history[-index]
+        prefix = "刚才心里想的是" if index == 1 else f"倒数第 {index} 条心里想的是"
+        yield event.plain_result(f"{prefix}：\n{thought}")
     
     # ==================== 指令：睡觉 / 起床 ====================
     
@@ -787,6 +787,36 @@ class NovaSplitterPlugin(Star):
         except Exception as e:
             logger.error(f"[Nova-Splitter] 思维链转发失败: {e}")
     
+    def _cache_thought(self, event: AstrMessageEvent, thought_content: str) -> bool:
+        """按会话保存思维历史，并避免同一事件的主拦截与兜底重复写入"""
+        thought_content = thought_content.strip()
+        if not thought_content:
+            return False
+
+        cached_contents = getattr(event, "__nova_cached_thought_contents", None)
+        if cached_contents is None:
+            cached_contents = set()
+            setattr(event, "__nova_cached_thought_contents", cached_contents)
+        if thought_content in cached_contents:
+            return False
+
+        try:
+            limit = max(1, int(self.config.get("thought_cache_limit", 10)))
+        except (TypeError, ValueError):
+            limit = 10
+
+        session_id = event.get_session_id()
+        history = self.thought_cache.setdefault(session_id, [])
+        history.append(thought_content)
+        if len(history) > limit:
+            del history[:-limit]
+        cached_contents.add(thought_content)
+        logger.info(
+            f"[Nova-Splitter] 思维历史已缓存: session={session_id}, "
+            f"count={len(history)}/{limit}"
+        )
+        return True
+
     def _parse_thought_text(self, text: str) -> ThoughtParseResult:
         tag = self.config.get("thought_tag", "thought")
         return ThoughtTagParser(tag).parse(text)
@@ -819,8 +849,7 @@ class NovaSplitterPlugin(Star):
                 )
 
         if thought_extracted and event:
-            session_id = event.get_session_id()
-            self.thought_cache[session_id] = thought_extracted
+            self._cache_thought(event, thought_extracted)
         return True
     
     def _get_actual_sleep_state(self) -> bool:
